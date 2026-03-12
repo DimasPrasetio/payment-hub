@@ -5,11 +5,11 @@ namespace Tests\Feature;
 use App\Enums\PaymentOrderStatus;
 use App\Enums\WebhookDeliveryStatus;
 use App\Models\Application;
+use App\Models\PaymentEvent;
 use App\Models\PaymentMethodMapping;
 use App\Models\PaymentOrder;
 use App\Models\PaymentProvider;
 use App\Models\ProviderTransaction;
-use App\Models\PaymentEvent;
 use App\Models\WebhookDelivery;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Http;
@@ -24,7 +24,6 @@ class ClientPaymentApiTest extends TestCase
         [$application, $headers] = $this->createApiContext();
 
         $createResponse = $this->withHeaders($headers)->postJson('/api/v1/payments', [
-            'application_code' => $application->code,
             'external_order_id' => 'INV-2026-001',
             'idempotency_key' => 'idem-inv-2026-001',
             'amount' => 200000,
@@ -63,12 +62,12 @@ class ClientPaymentApiTest extends TestCase
 
         $paymentId = (string) $createResponse->json('data.payment_id');
 
-        $detailResponse = $this->withHeaders($headers)->getJson('/api/v1/payments/' . $paymentId);
+        $detailResponse = $this->withHeaders($headers)->getJson('/api/v1/payments/'.$paymentId);
         $detailResponse->assertOk();
         $detailResponse->assertJsonPath('data.external_order_id', 'INV-2026-001');
         $detailResponse->assertJsonPath('data.metadata.product_name', 'Paket Premium');
 
-        $lookupResponse = $this->withHeaders($headers)->getJson('/api/v1/payments/lookup?application_code=BLASKU&external_order_id=INV-2026-001');
+        $lookupResponse = $this->withHeaders($headers)->getJson('/api/v1/payments/lookup?external_order_id=INV-2026-001');
         $lookupResponse->assertOk();
         $lookupResponse->assertJsonPath('data.payment_id', $paymentId);
 
@@ -78,14 +77,14 @@ class ClientPaymentApiTest extends TestCase
         $listResponse->assertJsonPath('data.0.payment_id', $paymentId);
         $listResponse->assertJsonPath('pagination.total', 1);
 
-        $eventResponse = $this->withHeaders($headers)->getJson('/api/v1/payments/' . $paymentId . '/events');
+        $eventResponse = $this->withHeaders($headers)->getJson('/api/v1/payments/'.$paymentId.'/events');
         $eventResponse->assertOk();
         $eventResponse->assertJsonCount(5, 'data');
         $eventResponse->assertJsonFragment(['event_type' => 'payment.created']);
         $eventResponse->assertJsonFragment(['event_type' => 'webhook.dispatched']);
         $eventResponse->assertJsonFragment(['event_type' => 'webhook.success']);
 
-        $deliveryResponse = $this->withHeaders($headers)->getJson('/api/v1/webhook-deliveries?payment_id=' . $paymentId);
+        $deliveryResponse = $this->withHeaders($headers)->getJson('/api/v1/webhook-deliveries?payment_id='.$paymentId);
         $deliveryResponse->assertOk();
         $deliveryResponse->assertJsonCount(1, 'data');
         $deliveryResponse->assertJsonPath('data.0.payment_id', $paymentId);
@@ -120,6 +119,46 @@ class ClientPaymentApiTest extends TestCase
         $this->assertSame(1, PaymentOrder::query()->count());
     }
 
+    public function test_idempotency_key_is_scoped_per_application(): void
+    {
+        [$firstApplication, $firstHeaders, $provider] = $this->createApiContext('idem-app-one');
+
+        $secondApplication = Application::factory()->create([
+            'code' => 'BLASKU2',
+            'name' => 'Blasku Mobile',
+            'api_key' => hash('sha256', 'idem-app-two'),
+            'default_provider' => $provider->code,
+            'webhook_url' => 'https://blasku.test/api/webhook/mobile',
+            'webhook_secret' => str_repeat('t', 40),
+        ]);
+
+        $sharedPayload = [
+            'idempotency_key' => 'shared-idempotency-key',
+            'amount' => 125000,
+            'currency' => 'IDR',
+            'payment_method' => 'QRIS',
+            'customer' => [
+                'name' => 'Dimas Prasetio',
+                'email' => 'dimas@example.com',
+                'phone' => '6281234567890',
+            ],
+        ];
+
+        $firstResponse = $this->withHeaders($firstHeaders)->postJson('/api/v1/payments', array_merge($sharedPayload, [
+            'external_order_id' => 'INV-APP-1',
+        ]));
+
+        $secondResponse = $this->withHeaders(['X-API-Key' => 'idem-app-two'])->postJson('/api/v1/payments', array_merge($sharedPayload, [
+            'external_order_id' => 'INV-APP-2',
+        ]));
+
+        $firstResponse->assertCreated();
+        $secondResponse->assertCreated();
+        $this->assertSame('BLASKU', $firstApplication->code);
+        $this->assertNotSame($firstResponse->json('data.payment_id'), $secondResponse->json('data.payment_id'));
+        $this->assertSame(2, PaymentOrder::query()->count());
+    }
+
     public function test_create_payment_returns_conflict_when_same_idempotency_key_has_different_payload(): void
     {
         [$application, $headers] = $this->createApiContext('conflict-secret');
@@ -149,7 +188,7 @@ class ClientPaymentApiTest extends TestCase
         $conflictResponse->assertJsonPath('error.code', 'IDEMPOTENCY_CONFLICT');
     }
 
-    public function test_client_can_cancel_pending_payment_and_retry_webhook_delivery(): void
+    public function test_client_cannot_cancel_provider_managed_payment_and_can_retry_failed_webhook_delivery(): void
     {
         [$application, $headers, $provider] = $this->createApiContext('cancel-secret');
 
@@ -172,22 +211,35 @@ class ClientPaymentApiTest extends TestCase
             'payment_order_id' => $payment->id,
             'application_id' => $application->id,
             'event_type' => 'payment.created',
+            'target_url' => $application->webhook_url,
+            'request_body' => [
+                'event' => 'payment.created',
+                'payment_id' => $payment->public_id,
+            ],
             'status' => WebhookDeliveryStatus::Failed,
             'attempt' => 1,
         ]);
 
-        $cancelResponse = $this->withHeaders($headers)->postJson('/api/v1/payments/' . $payment->public_id . '/cancel');
-        $cancelResponse->assertOk();
-        $cancelResponse->assertJsonPath('data.status', 'FAILED');
+        $cancelResponse = $this->withHeaders($headers)->postJson('/api/v1/payments/'.$payment->public_id.'/cancel');
+        $cancelResponse->assertStatus(409);
+        $cancelResponse->assertJsonPath('success', false);
+        $cancelResponse->assertJsonPath('error.code', 'PAYMENT_CANCELLATION_NOT_SUPPORTED');
 
         $payment->refresh();
-        $this->assertSame(PaymentOrderStatus::Failed, $payment->status);
+        $this->assertSame(PaymentOrderStatus::Pending, $payment->status);
 
-        $retryResponse = $this->withHeaders($headers)->postJson('/api/v1/webhook-deliveries/' . $failedDelivery->public_id . '/retry');
-        $retryResponse->assertOk();
+        $retryResponse = $this->withHeaders($headers)->postJson('/api/v1/webhook-deliveries/'.$failedDelivery->public_id.'/retry');
+        $retryResponse->assertStatus(202);
         $retryResponse->assertJsonPath('data.id', $failedDelivery->public_id);
         $retryResponse->assertJsonPath('data.status', 'pending');
         $retryResponse->assertJsonPath('data.attempt', 2);
+
+        $failedDelivery->refresh();
+        $this->assertSame(WebhookDeliveryStatus::Success, $failedDelivery->status);
+        $this->assertSame(200, $failedDelivery->response_code);
+
+        Http::assertSent(fn ($request) => $request->url() === $application->webhook_url
+            && $request->hasHeader('X-Webhook-Event', 'payment.created'));
     }
 
     public function test_tripay_callback_can_mark_payment_paid_and_record_audit_events(): void
@@ -274,6 +326,59 @@ class ClientPaymentApiTest extends TestCase
             'event_type' => 'payment.paid',
             'status' => WebhookDeliveryStatus::Success->value,
         ]);
+    }
+
+    public function test_tripay_callback_still_updates_existing_payment_when_provider_is_inactive(): void
+    {
+        [$application, , $provider] = $this->createApiContext('inactive-callback-secret');
+
+        $payment = PaymentOrder::factory()->create([
+            'application_id' => $application->id,
+            'provider_code' => $provider->code,
+            'payment_method' => 'QRIS',
+            'status' => PaymentOrderStatus::Pending,
+            'customer_phone' => '6281234567890',
+            'amount' => 200000,
+        ]);
+
+        ProviderTransaction::factory()->create([
+            'payment_order_id' => $payment->id,
+            'provider' => $provider->code,
+            'merchant_ref' => $payment->merchant_ref,
+            'payment_method' => 'QRIS',
+        ]);
+
+        $provider->forceFill(['is_active' => false])->save();
+
+        $payload = [
+            'reference' => 'T9999999999',
+            'merchant_ref' => $payment->merchant_ref,
+            'payment_method' => 'QRIS',
+            'total_amount' => 200000,
+            'status' => 'PAID',
+            'paid_at' => now()->timestamp,
+        ];
+        $body = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $signature = hash_hmac('sha256', $body, $provider->config['private_key']);
+
+        $response = $this->call(
+            'POST',
+            '/api/v1/callback/tripay',
+            [],
+            [],
+            [],
+            [
+                'CONTENT_TYPE' => 'application/json',
+                'HTTP_X_CALLBACK_SIGNATURE' => $signature,
+            ],
+            $body,
+        );
+
+        $response->assertOk();
+        $response->assertExactJson(['success' => true]);
+
+        $payment->refresh();
+        $this->assertSame(PaymentOrderStatus::Paid, $payment->status);
     }
 
     public function test_tripay_callback_rejects_invalid_signature(): void
@@ -407,7 +512,7 @@ class ClientPaymentApiTest extends TestCase
                 && $request->method() === 'POST'
                 && $request->hasHeader('Authorization', 'Bearer tripay-api-key')
                 && str_contains($request->body(), 'method=QRIS')
-                && str_contains($request->body(), 'merchant_ref=' . $payment->merchant_ref);
+                && str_contains($request->body(), 'merchant_ref='.$payment->merchant_ref);
         });
 
         $this->assertDatabaseHas('provider_transactions', [
@@ -477,7 +582,7 @@ class ClientPaymentApiTest extends TestCase
         ]);
 
         $response = $this->withHeaders(['X-API-Key' => 'provider-sync-secret'])
-            ->postJson('/api/v1/payments/' . $payment->public_id . '/sync');
+            ->postJson('/api/v1/payments/'.$payment->public_id.'/sync');
 
         $response->assertOk();
         $response->assertJsonPath('data.payment_id', $payment->public_id);
@@ -498,7 +603,76 @@ class ClientPaymentApiTest extends TestCase
         });
     }
 
-    private function createApiContext(string $apiKey = 'client-secret'): array
+    public function test_partial_refund_is_rejected(): void
+    {
+        [$application, $headers, $provider] = $this->createApiContext('partial-refund-secret');
+
+        $payment = PaymentOrder::factory()->create([
+            'application_id' => $application->id,
+            'provider_code' => $provider->code,
+            'payment_method' => 'QRIS',
+            'status' => PaymentOrderStatus::Paid,
+            'amount' => 200000,
+            'paid_at' => now(),
+            'customer_phone' => '6281234567890',
+        ]);
+
+        ProviderTransaction::factory()->create([
+            'payment_order_id' => $payment->id,
+            'provider' => $provider->code,
+            'merchant_ref' => $payment->merchant_ref,
+            'payment_method' => 'QRIS',
+        ]);
+
+        $response = $this->withHeaders($headers)->postJson('/api/v1/payments/'.$payment->public_id.'/refund', [
+            'amount' => 100000,
+            'reason' => 'Customer request',
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('success', false);
+        $response->assertJsonPath('error.code', 'VALIDATION_ERROR');
+        $response->assertJsonPath('error.details.amount.0', 'Partial refunds are not supported. The refund amount must match the full payment amount.');
+    }
+
+    public function test_tripay_refund_is_rejected_until_provider_integration_exists(): void
+    {
+        [$application, $headers, $provider] = $this->createApiContext('tripay-refund-secret');
+
+        $provider->forceFill([
+            'config' => array_merge($provider->config, [
+                'supports_refund_api' => true,
+            ]),
+        ])->save();
+
+        $payment = PaymentOrder::factory()->create([
+            'application_id' => $application->id,
+            'provider_code' => $provider->code,
+            'payment_method' => 'QRIS',
+            'status' => PaymentOrderStatus::Paid,
+            'amount' => 200000,
+            'paid_at' => now(),
+            'customer_phone' => '6281234567890',
+        ]);
+
+        ProviderTransaction::factory()->create([
+            'payment_order_id' => $payment->id,
+            'provider' => $provider->code,
+            'merchant_ref' => $payment->merchant_ref,
+            'payment_method' => 'QRIS',
+        ]);
+
+        $response = $this->withHeaders($headers)->postJson('/api/v1/payments/'.$payment->public_id.'/refund', [
+            'amount' => 200000,
+            'reason' => 'Customer request',
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('success', false);
+        $response->assertJsonPath('error.code', 'REFUND_NOT_SUPPORTED');
+    }
+
+    public function test_create_payment_fails_when_provider_credentials_are_incomplete(): void
     {
         Http::fake([
             'https://blasku.test/*' => Http::response(['received' => true], 200),
@@ -508,9 +682,82 @@ class ClientPaymentApiTest extends TestCase
             ['code' => 'tripay'],
             [
                 'name' => 'Tripay',
+                'is_active' => true,
                 'config' => [
                     'merchant_code' => 'TRIPAY',
                     'private_key' => 'tripay-private-key',
+                ],
+            ],
+        );
+
+        $application = Application::factory()->create([
+            'code' => 'BLASKU',
+            'api_key' => hash('sha256', 'incomplete-provider-secret'),
+            'default_provider' => $provider->code,
+            'webhook_url' => 'https://blasku.test/api/webhook/payment',
+            'webhook_secret' => str_repeat('s', 40),
+        ]);
+
+        PaymentMethodMapping::query()->updateOrCreate(
+            [
+                'provider_code' => $provider->code,
+                'internal_code' => 'QRIS',
+            ],
+            [
+                'provider_method_code' => 'QRIS',
+                'display_name' => 'QRIS',
+                'group' => 'e-wallet',
+                'min_amount' => 1000,
+                'max_amount' => 10000000,
+                'is_active' => true,
+            ],
+        );
+
+        $response = $this->withHeaders(['X-API-Key' => 'incomplete-provider-secret'])->postJson('/api/v1/payments', [
+            'external_order_id' => 'INV-INCOMPLETE-001',
+            'amount' => 200000,
+            'currency' => 'IDR',
+            'payment_method' => 'QRIS',
+            'customer' => [
+                'name' => 'Dimas Prasetio',
+                'email' => 'dimas@example.com',
+                'phone' => '6281234567890',
+            ],
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonPath('success', false);
+        $response->assertJsonPath('error.code', 'PROVIDER_CONFIG_INCOMPLETE');
+        $this->assertSame(0, PaymentOrder::query()->count());
+    }
+
+    private function createApiContext(string $apiKey = 'client-secret'): array
+    {
+        Http::fake([
+            'https://tripay.test/api/transaction/create' => Http::response([
+                'success' => true,
+                'data' => [
+                    'reference' => 'T1234567890',
+                    'payment_method' => 'QRIS',
+                    'checkout_url' => 'https://tripay.test/checkout/T1234567890',
+                    'qr_string' => '000201010212...',
+                    'qr_url' => 'https://tripay.test/qr/T1234567890',
+                    'pay_code' => null,
+                ],
+            ], 200),
+            'https://blasku.test/*' => Http::response(['received' => true], 200),
+        ]);
+
+        $provider = PaymentProvider::query()->updateOrCreate(
+            ['code' => 'tripay'],
+            [
+                'name' => 'Tripay',
+                'config' => [
+                    'merchant_code' => 'TRIPAY',
+                    'api_key' => 'tripay-api-key',
+                    'private_key' => 'tripay-private-key',
+                    'api_base_url' => 'https://tripay.test/api',
+                    'public_base_url' => 'https://tripay.test',
                 ],
                 'is_active' => true,
             ],

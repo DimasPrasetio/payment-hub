@@ -21,7 +21,7 @@ class TripayProvider implements PaymentProviderInterface
         $payload = $this->buildTransactionPayload($payment, $mapping, $provider);
 
         if (! $this->hasApiCredentials($provider)) {
-            return $this->createStubTransaction($payment, $mapping, $provider, $payload);
+            throw $this->providerConfigException($provider);
         }
 
         try {
@@ -29,7 +29,7 @@ class TripayProvider implements PaymentProviderInterface
                 ->asForm()
                 ->timeout(15)
                 ->withToken((string) data_get($provider->config, 'api_key'))
-                ->post($this->apiBaseUrl($provider) . '/transaction/create', $payload);
+                ->post($this->apiBaseUrl($provider).'/transaction/create', $payload);
         } catch (ConnectionException $exception) {
             throw new ApiException(
                 'PROVIDER_TIMEOUT',
@@ -70,17 +70,7 @@ class TripayProvider implements PaymentProviderInterface
     public function queryTransaction(PaymentOrder $payment, PaymentProvider $provider): array
     {
         if (! $this->hasApiCredentials($provider)) {
-            return [
-                'provider' => $provider->code,
-                'merchant_ref' => $payment->merchant_ref,
-                'status' => 'UNPAID',
-                'provider_status' => 'UNPAID',
-                'internal_status' => PaymentOrderStatus::Pending,
-                'amount' => (int) $payment->amount,
-                'provider_reference' => optional($payment->latestProviderTransaction)->provider_reference,
-                'paid_at' => null,
-                'payload' => [],
-            ];
+            throw $this->providerConfigException($provider);
         }
 
         $reference = (string) optional($payment->latestProviderTransaction)->provider_reference;
@@ -103,7 +93,7 @@ class TripayProvider implements PaymentProviderInterface
             $response = Http::acceptJson()
                 ->timeout(15)
                 ->withToken((string) data_get($provider->config, 'api_key'))
-                ->get($this->apiBaseUrl($provider) . '/transaction/detail', [
+                ->get($this->apiBaseUrl($provider).'/transaction/detail', [
                     'reference' => $reference,
                 ]);
         } catch (ConnectionException $exception) {
@@ -186,21 +176,11 @@ class TripayProvider implements PaymentProviderInterface
 
     public function refund(PaymentOrder $payment, int $amount, string $reason, PaymentProvider $provider): array
     {
-        if (! (bool) data_get($provider->config, 'supports_refund_api', false)) {
-            throw new ApiException(
-                'REFUND_NOT_SUPPORTED',
-                sprintf("Provider '%s' does not support refund via API. Please process manually.", $payment->provider_code),
-                422,
-            );
-        }
-
-        return [
-            'refund_reference' => 'RFND_' . strtoupper(Str::random(12)),
-            'refund_amount' => $amount,
-            'refund_method' => 'api',
-            'reason' => $reason,
-            'refunded_at' => now()->toIso8601String(),
-        ];
+        throw new ApiException(
+            'REFUND_NOT_SUPPORTED',
+            sprintf("Provider '%s' does not support refund via API in the current implementation. Please process manually.", $payment->provider_code),
+            422,
+        );
     }
 
     protected function mapStatus(string $providerStatus): PaymentOrderStatus
@@ -265,7 +245,7 @@ class TripayProvider implements PaymentProviderInterface
             'return_url' => data_get($provider->config, 'return_url'),
             'expired_time' => $payment->expires_at?->timestamp,
             'signature' => $privateKey !== ''
-                ? hash_hmac('sha256', $merchantCode . $payment->merchant_ref . $payment->amount, $privateKey)
+                ? hash_hmac('sha256', $merchantCode.$payment->merchant_ref.$payment->amount, $privateKey)
                 : null,
         ], static fn ($value) => $value !== null && $value !== '');
     }
@@ -277,8 +257,8 @@ class TripayProvider implements PaymentProviderInterface
         array $payload
     ): array {
         $providerReference = strtoupper((string) data_get($provider->config, 'merchant_code', 'TRIPAY'))
-            . '_'
-            . strtoupper(Str::random(12));
+            .'_'
+            .strtoupper(Str::random(12));
         $baseUrl = $this->publicBaseUrl($provider);
         $isBankTransfer = str_contains($mapping->internal_code, 'BANK_TRANSFER') || $mapping->group === 'bank_transfer';
         $isQris = $mapping->internal_code === 'QRIS' || $mapping->provider_method_code === 'QRIS';
@@ -286,10 +266,10 @@ class TripayProvider implements PaymentProviderInterface
         return [
             'provider_reference' => $providerReference,
             'payment_method' => $mapping->provider_method_code,
-            'payment_url' => $baseUrl . '/checkout/' . $providerReference,
+            'payment_url' => $baseUrl.'/checkout/'.$providerReference,
             'pay_code' => $isBankTransfer ? $this->payCode() : null,
             'qr_string' => $isQris ? $this->qrisString($payment) : null,
-            'qr_url' => $isQris ? $baseUrl . '/qr/' . $providerReference : null,
+            'qr_url' => $isQris ? $baseUrl.'/qr/'.$providerReference : null,
             'raw_request' => $payload,
             'raw_response' => [
                 'status' => 'accepted',
@@ -306,6 +286,15 @@ class TripayProvider implements PaymentProviderInterface
             && (string) data_get($provider->config, 'private_key', '') !== '';
     }
 
+    protected function providerConfigException(PaymentProvider $provider): ApiException
+    {
+        return new ApiException(
+            'PROVIDER_CONFIG_INCOMPLETE',
+            sprintf("Provider '%s' credentials are incomplete.", $provider->code),
+            422,
+        );
+    }
+
     protected function apiBaseUrl(PaymentProvider $provider): string
     {
         $baseUrl = rtrim((string) data_get($provider->config, 'api_base_url', data_get($provider->config, 'base_url', '')), '/');
@@ -320,7 +309,7 @@ class TripayProvider implements PaymentProviderInterface
             return $baseUrl;
         }
 
-        return $baseUrl . ($provider->sandbox_mode ? '/api-sandbox' : '/api');
+        return $baseUrl.($provider->sandbox_mode ? '/api-sandbox' : '/api');
     }
 
     protected function publicBaseUrl(PaymentProvider $provider): string

@@ -207,7 +207,7 @@ Flow create payment aktual:
 8. snapshot request dan response provider disimpan di `provider_transactions`
 9. payment diubah ke `PENDING`
 10. event `payment.created` dicatat
-11. webhook `payment.created` dibuat dan langsung dicoba kirim
+11. webhook `payment.created` dibuat dan diantrekan ke queue job
 
 ### 5.6 Provider Callback Handling
 
@@ -229,12 +229,12 @@ Flow callback aktual:
 2. verifikasi signature atau token via adapter
 3. lookup payment berdasarkan `provider_code + merchant_ref`
 4. cek amount match
-5. jika payment sudah final maka callback menjadi no-op
+5. jika transisi status dari provider tidak valid maka callback menjadi no-op terkontrol tanpa menurunkan state internal
 6. map status provider ke status internal
 7. update payment dan latest provider transaction
 8. catat payment event
 9. buat outbound webhook untuk aplikasi asal
-10. langsung kirim webhook secara sinkron
+10. antrekan webhook untuk dikirim oleh queue job
 
 ### 5.7 Manual Payment Status Sync
 
@@ -261,7 +261,8 @@ Perilaku aktual:
 
 - refund hanya bisa dilakukan jika provider mengizinkan `supports_refund_api`
 - Midtrans dan Xendit punya jalur refund API nyata bila credential lengkap
-- Tripay tetap tergantung flag config dan pada implementasi saat ini belum punya call refund nyata ke API eksternal
+- Tripay belum mendukung refund API pada implementasi saat ini dan selalu ditolak
+- partial refund belum didukung oleh API client
 - jika refund berhasil, status payment berubah menjadi `REFUNDED`
 - webhook `payment.refunded` akan dibuat dan dicoba kirim
 
@@ -278,8 +279,8 @@ Sudah tersedia:
 Retry behavior aktual:
 
 - `next_retry_at` dihitung dengan delay `1m`, `5m`, `30m`, `2h`, `12h`
-- belum ada worker otomatis yang mengeksekusi retry
-- endpoint retry manual saat ini hanya mereset state delivery menjadi `pending`
+- command scheduler `webhook-deliveries:retry-due` mengeksekusi antrean retry yang sudah jatuh tempo
+- endpoint retry manual mereset state delivery menjadi `pending` dan langsung mengantrekan resend
 
 ### 5.10 Admin Monitoring
 
@@ -309,7 +310,7 @@ Sebagian halaman bersifat observability dan read-only.
 
 Catatan:
 
-- semua adapter memiliki fallback stub bila credential minimum belum lengkap
+- adapter runtime akan mengembalikan `PROVIDER_CONFIG_INCOMPLETE` bila credential minimum belum lengkap
 - runtime tetap membutuhkan provider aktif agar request client bisa diproses
 
 ## 7. Status Lifecycle
@@ -340,7 +341,8 @@ Midtrans:
 - `capture` -> `PAID` atau `PENDING` jika fraud `challenge`
 - `expire` -> `EXPIRED`
 - `deny`, `cancel`, `failure` -> `FAILED`
-- `refund`, `partial_refund`, `chargeback`, `partial_chargeback` -> `REFUNDED`
+- `refund`, `chargeback` -> `REFUNDED`
+- `partial_refund`, `partial_chargeback` -> tetap `PAID` karena partial refund belum dimodelkan sebagai status tersendiri
 
 Xendit:
 
@@ -502,14 +504,9 @@ Berikut batasan implementasi saat ini yang perlu diperlakukan sebagai known cons
 
 - belum ada admin JSON API
 - JWT auth belum diimplementasikan
-- `idempotency_key` masih global unique, belum scoped per application dan belum memiliki TTL
-- webhook delivery masih sinkron, belum queued
-- retry webhook otomatis belum berjalan walau `next_retry_at` sudah dihitung
-- endpoint manual retry webhook belum melakukan resend HTTP
-- health check melaporkan `queue: running` sebagai nilai statis, bukan inspeksi worker aktual
-- `GET /api/v1/payment-methods` memfilter status mapping, bukan status provider
+- `idempotency_key` belum memiliki TTL, tetapi sudah di-scope per application
 - skema provider saat ini belum mendukung beberapa merchant profile berbeda untuk provider code yang sama
-- cancel payment belum mengirim cancel request ke provider
+- cancel payment belum memiliki provider-side cancel integration, sehingga payment provider-managed tidak bisa dipaksa menjadi final dari client API
 
 ## 11. Routing Strategy
 
@@ -549,8 +546,8 @@ Fakta konfigurasi saat ini:
 
 Prioritas lanjutan yang paling relevan terhadap arsitektur saat ini:
 
-- ubah webhook delivery menjadi queue-based dan buat worker retry otomatis
-- jadikan `idempotency_key` scoped per application dengan TTL
+- pertahankan webhook delivery queue-based dan tambahkan observability/alerting worker di production
+- tambahkan TTL housekeeping untuk `idempotency_key` bila retention window perlu dibatasi
 - sediakan admin JSON API bila diperlukan integrasi eksternal
 - dukung multiple merchant profile per provider type
 - sinkronkan payment methods langsung dari provider API

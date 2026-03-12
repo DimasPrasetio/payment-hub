@@ -58,6 +58,26 @@ class PaymentMethodApiTest extends TestCase
             ],
         );
 
+        $inactiveProvider = PaymentProvider::query()->updateOrCreate(
+            ['code' => 'midtrans'],
+            ['name' => 'Midtrans', 'is_active' => false],
+        );
+
+        PaymentMethodMapping::query()->updateOrCreate(
+            [
+                'provider_code' => $inactiveProvider->code,
+                'internal_code' => 'QRIS_MID',
+            ],
+            [
+                'provider_method_code' => 'qris',
+                'display_name' => 'QRIS Midtrans',
+                'group' => 'e-wallet',
+                'min_amount' => 10000,
+                'max_amount' => 500000,
+                'is_active' => true,
+            ],
+        );
+
         $response = $this->withHeaders([
             'X-API-Key' => $apiKey,
         ])->getJson('/api/v1/payment-methods?provider_code=tripay&active_only=true&amount=150000');
@@ -68,6 +88,7 @@ class PaymentMethodApiTest extends TestCase
         $response->assertJsonPath('data.0.code', 'QRIS');
         $response->assertJsonPath('data.0.provider', 'tripay');
         $response->assertJsonPath('data.0.is_active', true);
+        $response->assertJsonMissing(['provider' => 'midtrans']);
         $response->assertJsonStructure([
             'meta' => ['timestamp', 'request_id'],
         ]);

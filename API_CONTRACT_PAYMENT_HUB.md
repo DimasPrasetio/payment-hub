@@ -185,14 +185,15 @@ Resolver yang tersedia:
 
 | Provider | Create | Query / Sync | Callback Verify | Refund API | Stub Fallback |
 |---|---|---|---|---|---|
-| Tripay | yes | yes | yes | conditional by config | yes |
-| Midtrans | yes | yes | yes | conditional by config | yes |
-| Xendit | yes | yes | yes | conditional by config | yes |
+| Tripay | yes | yes | yes | no | no |
+| Midtrans | yes | yes | yes | conditional by config | no |
+| Xendit | yes | yes | yes | conditional by config | no |
 
 Catatan:
 
-- semua provider akan fallback ke adapter stub bila credential minimum belum lengkap
-- provider tetap harus `is_active = true` agar dapat dipakai runtime
+- runtime akan mengembalikan `PROVIDER_CONFIG_INCOMPLETE` jika credential minimum belum lengkap
+- provider aktif wajib untuk create payment baru
+- callback, sync, dan refund untuk payment existing tetap bisa memakai konfigurasi provider walaupun provider sudah dinonaktifkan untuk traffic baru
 
 ## 8. Provider Activation Requirements
 
@@ -239,10 +240,10 @@ Ringkasan endpoint yang benar-benar tersedia:
 | `GET` | `/api/v1/payments/{payment_id}` | `X-API-Key` | payment detail |
 | `GET` | `/api/v1/payments/{payment_id}/events` | `X-API-Key` | payment audit trail |
 | `POST` | `/api/v1/payments/{payment_id}/sync` | `X-API-Key` | refresh latest status from provider |
-| `POST` | `/api/v1/payments/{payment_id}/cancel` | `X-API-Key` | cancel internal payment |
+| `POST` | `/api/v1/payments/{payment_id}/cancel` | `X-API-Key` | cancel payment internal pre-provider |
 | `POST` | `/api/v1/payments/{payment_id}/refund` | `X-API-Key` | refund paid payment |
 | `GET` | `/api/v1/webhook-deliveries` | `X-API-Key` | list outbound delivery records |
-| `POST` | `/api/v1/webhook-deliveries/{delivery_id}/retry` | `X-API-Key` | reset delivery for manual retry |
+| `POST` | `/api/v1/webhook-deliveries/{delivery_id}/retry` | `X-API-Key` | queue resend untuk manual retry |
 
 ## 10. Provider Callback Contract
 
@@ -263,16 +264,16 @@ Supported values:
 Actual callback processing flow:
 
 1. resolve provider by `{provider_code}`
-2. reject if provider not found or inactive
+2. reject jika provider tidak ditemukan
 3. delegate signature atau token verification ke adapter
 4. lookup payment by `provider_code + merchant_ref`
 5. log `callback.received` jika verification valid
 6. jika amount mismatch, log `callback.rejected` dan return success tanpa state update
-7. jika payment sudah final maka callback menjadi idempotent no-op
+7. jika transisi status dari provider tidak valid, callback menjadi no-op terkontrol tanpa menurunkan state internal
 8. map status provider ke status internal
 9. update payment dan latest provider transaction
 10. create outbound webhook delivery untuk eventable state
-11. attempt webhook dispatch immediately
+11. queue webhook delivery
 
 ### 10.3 Success and Error Behavior
 
@@ -284,22 +285,13 @@ Success:
 }
 ```
 
-Error bodies hanya dikembalikan untuk:
+Error bodies dikembalikan untuk semua error callback, termasuk internal error.
 
-- `INVALID_CALLBACK_SIGNATURE`
-- `PAYMENT_NOT_FOUND`
-- `PROVIDER_NOT_FOUND`
-- `PROVIDER_INACTIVE`
+Karakteristik:
 
-Untuk error internal lain, endpoint tetap merespons:
-
-```json
-{
-  "success": true
-}
-```
-
-Tujuannya adalah mencegah retry provider yang tidak perlu.
+- signature invalid tetap `403`
+- payment/provider tidak ditemukan tetap `404`/`422`
+- internal error merespons `500` agar provider dapat retry bila mendukung
 
 ### 10.4 Provider-specific Expectations
 
@@ -358,12 +350,12 @@ Event yang saat ini dikirim:
 
 Karakteristik delivery saat ini:
 
-- synchronous HTTP POST
+- webhook dikirim melalui queue job
 - timeout `15` detik
 - delivery status: `pending`, `success`, `failed`
 - retry schedule dihitung menjadi `next_retry_at`
-- belum ada worker otomatis yang mengeksekusi retry
-- endpoint manual retry hanya mereset state delivery, belum melakukan resend langsung
+- command scheduler `webhook-deliveries:retry-due` akan mengantrekan retry yang sudah jatuh tempo
+- endpoint manual retry mereset state delivery dan langsung mengantrekan resend
 
 ## 12. Data Model Summary
 
@@ -475,12 +467,12 @@ Admin panel route summary:
 ## 14. Operational Notes
 
 - `GET /api/v1/providers` hanya mengembalikan provider aktif.
-- `GET /api/v1/payment-methods` tidak join ke status provider, sehingga yang difilter hanya status mapping.
-- create payment dan callback runtime akan gagal jika provider nonaktif.
+- `GET /api/v1/payment-methods` hanya mengembalikan mapping aktif dari provider yang aktif.
+- create payment baru akan gagal jika provider nonaktif, tetapi callback/sync/refund untuk payment existing tetap dapat memakai provider config yang sama.
 - satu `payment_providers.code` hanya mewakili satu config provider. Banyak aplikasi dapat berbagi config yang sama.
 - skema saat ini belum mendukung beberapa merchant profile berbeda untuk provider code yang sama.
 - `merchant_ref` format aktual adalah `{APP_CODE}-{YYYYMMDD}-{RANDOM6}`.
-- `cancel` adalah state change internal, bukan API cancel ke provider.
+- `cancel` hanya valid untuk payment internal yang belum masuk lifecycle provider. Payment provider-managed akan ditolak dengan `PAYMENT_CANCELLATION_NOT_SUPPORTED`.
 - timezone aplikasi saat ini `UTC`.
 - CORS saat ini terbuka untuk `api/*` dengan `allowed_origins = *`.
 
@@ -500,6 +492,7 @@ Admin panel route summary:
 | `IDEMPOTENCY_CONFLICT` | 409 | key sama dengan payload berbeda |
 | `INVALID_CALLBACK_SIGNATURE` | 403 | signature atau token callback tidak valid |
 | `PAYMENT_ALREADY_FINAL` | 409 | payment sudah final atau tidak eligible |
+| `PAYMENT_CANCELLATION_NOT_SUPPORTED` | 409 | payment sudah provider-managed dan belum bisa dibatalkan di provider |
 | `REFUND_NOT_SUPPORTED` | 422 | refund API tidak didukung provider |
 | `PROVIDER_CONFIG_INCOMPLETE` | 422 | credential provider belum cukup |
 | `PROVIDER_REFERENCE_MISSING` | 422 | referensi provider belum tersedia |

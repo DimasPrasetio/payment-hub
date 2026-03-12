@@ -12,9 +12,7 @@ use Illuminate\Http\Request;
 
 class WebhookDeliveryController extends ApiController
 {
-    public function __construct(private readonly PaymentService $paymentService)
-    {
-    }
+    public function __construct(private readonly PaymentService $paymentService) {}
 
     public function index(WebhookDeliveryListRequest $request): JsonResponse
     {
@@ -73,7 +71,7 @@ class WebhookDeliveryController extends ApiController
             'id' => $delivery->public_id,
             'status' => $delivery->status->value,
             'attempt' => $delivery->attempt,
-            'retried_at' => now()->toIso8601String(),
-        ]);
+            'queued_at' => now()->toIso8601String(),
+        ], 202);
     }
 }

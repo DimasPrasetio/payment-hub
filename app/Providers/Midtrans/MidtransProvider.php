@@ -17,15 +17,18 @@ class MidtransProvider implements PaymentProviderInterface
 {
     public function __construct(
         private readonly MidtransClient $client,
-    ) {
-    }
+    ) {}
 
     public function createTransaction(PaymentOrder $payment, PaymentMethodMapping $mapping, PaymentProvider $provider): array
     {
         $payload = $this->buildTransactionPayload($payment, $mapping, $provider);
 
         if (! $this->hasApiCredentials($provider)) {
-            return $this->createStubTransaction($payment, $mapping, $provider, $payload);
+            throw new ApiException(
+                'PROVIDER_CONFIG_INCOMPLETE',
+                'Midtrans provider credentials are incomplete.',
+                422,
+            );
         }
 
         try {
@@ -42,7 +45,7 @@ class MidtransProvider implements PaymentProviderInterface
         $data = $this->normalizeSdkPayload($response);
 
         return [
-            'provider_reference' => (string) ($data['token'] ?? $data['redirect_url'] ?? strtoupper('MID_' . Str::random(12))),
+            'provider_reference' => (string) ($data['token'] ?? $data['redirect_url'] ?? strtoupper('MID_'.Str::random(12))),
             'payment_method' => $mapping->provider_method_code,
             'payment_url' => $data['redirect_url'] ?? null,
             'pay_code' => null,
@@ -56,17 +59,11 @@ class MidtransProvider implements PaymentProviderInterface
     public function queryTransaction(PaymentOrder $payment, PaymentProvider $provider): array
     {
         if (! $this->hasApiCredentials($provider)) {
-            return [
-                'provider' => $provider->code,
-                'merchant_ref' => $payment->merchant_ref,
-                'status' => 'PENDING',
-                'provider_status' => 'PENDING',
-                'internal_status' => PaymentOrderStatus::Pending,
-                'amount' => (int) $payment->amount,
-                'provider_reference' => optional($payment->latestProviderTransaction)->provider_reference,
-                'paid_at' => null,
-                'payload' => [],
-            ];
+            throw new ApiException(
+                'PROVIDER_CONFIG_INCOMPLETE',
+                'Midtrans provider credentials are incomplete.',
+                422,
+            );
         }
 
         try {
@@ -154,7 +151,7 @@ class MidtransProvider implements PaymentProviderInterface
             );
         }
 
-        $refundReference = 'RFND_' . strtoupper(Str::random(12));
+        $refundReference = 'RFND_'.strtoupper(Str::random(12));
 
         try {
             $response = $this->client->refund($provider, $payment->merchant_ref, [
@@ -185,7 +182,8 @@ class MidtransProvider implements PaymentProviderInterface
             'capture' => $fraudStatus === 'challenge' ? PaymentOrderStatus::Pending : PaymentOrderStatus::Paid,
             'expire' => PaymentOrderStatus::Expired,
             'deny', 'cancel', 'failure' => PaymentOrderStatus::Failed,
-            'refund', 'partial_refund', 'chargeback', 'partial_chargeback' => PaymentOrderStatus::Refunded,
+            'refund', 'chargeback' => PaymentOrderStatus::Refunded,
+            'partial_refund', 'partial_chargeback' => PaymentOrderStatus::Paid,
             'pending', 'authorize' => PaymentOrderStatus::Pending,
             default => PaymentOrderStatus::Pending,
         };
@@ -237,13 +235,13 @@ class MidtransProvider implements PaymentProviderInterface
         PaymentProvider $provider,
         array $payload
     ): array {
-        $providerReference = 'MIDTOKEN_' . strtoupper(Str::random(12));
+        $providerReference = 'MIDTOKEN_'.strtoupper(Str::random(12));
         $baseUrl = $provider->sandbox_mode ? 'https://app.sandbox.midtrans.com' : 'https://app.midtrans.com';
 
         return [
             'provider_reference' => $providerReference,
             'payment_method' => $mapping->provider_method_code,
-            'payment_url' => $baseUrl . '/snap/v2/vtweb/' . $providerReference,
+            'payment_url' => $baseUrl.'/snap/v2/vtweb/'.$providerReference,
             'pay_code' => null,
             'qr_string' => null,
             'qr_url' => null,
@@ -252,7 +250,7 @@ class MidtransProvider implements PaymentProviderInterface
                 'status' => 'accepted',
                 'mode' => 'adapter_stub',
                 'token' => $providerReference,
-                'redirect_url' => $baseUrl . '/snap/v2/vtweb/' . $providerReference,
+                'redirect_url' => $baseUrl.'/snap/v2/vtweb/'.$providerReference,
             ],
         ];
     }
@@ -273,7 +271,7 @@ class MidtransProvider implements PaymentProviderInterface
             return '';
         }
 
-        return hash('sha512', $orderId . $statusCode . $grossAmount . $serverKey);
+        return hash('sha512', $orderId.$statusCode.$grossAmount.$serverKey);
     }
 
     protected function normalizeSdkPayload(mixed $payload): array

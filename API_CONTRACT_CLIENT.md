@@ -228,8 +228,8 @@ Timezone aplikasi saat ini adalah `UTC`, sehingga contoh payload menggunakan suf
 `idempotency_key` saat ini:
 
 - opsional
-- unique global di tabel `payment_orders`
-- belum scoped per application
+- di-scope per application
+- disimpan secara internal sebagai scoped key
 - belum memakai TTL 24 jam
 
 Jika key sama dan payload identik:
@@ -250,7 +250,12 @@ Provider yang sudah dikenali orchestrator saat ini:
 - `midtrans`
 - `xendit`
 
-Hanya provider aktif yang bisa dipakai untuk create, sync, callback, dan refund.
+Provider aktif wajib untuk create payment baru.
+
+Untuk payment yang sudah ada:
+
+- callback provider tetap diproses walaupun provider dinonaktifkan untuk traffic baru
+- sync dan refund masih bisa memakai konfigurasi provider existing selama credential operasional tersedia
 
 ## 7. Public Endpoint
 
@@ -262,7 +267,7 @@ GET /api/v1/health
 
 Auth: tidak perlu.
 
-Response `200`:
+Response `202`:
 
 ```json
 {
@@ -272,7 +277,7 @@ Response `200`:
   "services": {
     "database": "connected",
     "redis": "connected",
-    "queue": "running",
+    "queue": "sync",
     "payment_orders_table": true
   }
 }
@@ -378,8 +383,8 @@ Response `200`:
 
 Catatan:
 
-- endpoint ini memfilter berdasarkan status mapping, bukan status provider
-- client sebaiknya memakai `/providers` untuk mengetahui provider mana yang aktif dipakai runtime
+- endpoint ini hanya mengembalikan mapping aktif dari provider yang aktif
+- provider inactive tidak akan muncul walaupun mapping masih `is_active = true`
 
 ### 8.3 Create Payment
 
@@ -391,7 +396,6 @@ Request body:
 
 ```json
 {
-  "application_code": "BLASKU",
   "external_order_id": "INV-2026-001",
   "idempotency_key": "idem-blasku-001",
   "amount": 200000,
@@ -413,7 +417,7 @@ Field rules:
 
 | Field | Type | Required | Rules |
 |---|---|---:|---|
-| `application_code` | string | yes | wajib sama dengan aplikasi yang terautentikasi |
+| `application_code` | string | no | jika dikirim harus sama dengan aplikasi yang terautentikasi |
 | `external_order_id` | string | yes | max 100, unique per application |
 | `idempotency_key` | string | no | max 100 |
 | `amount` | integer | yes | min 1000 |
@@ -479,6 +483,7 @@ Kemungkinan error:
 - `PAYMENT_METHOD_NOT_AVAILABLE`
 - `PROVIDER_NOT_FOUND`
 - `PROVIDER_INACTIVE`
+- `PROVIDER_CONFIG_INCOMPLETE`
 - `PROVIDER_ERROR`
 - `PROVIDER_TIMEOUT`
 
@@ -536,13 +541,13 @@ Error:
 ### 8.5 Lookup Payment by External Order ID
 
 ```text
-GET /api/v1/payments/lookup?application_code=BLASKU&external_order_id=INV-2026-001
+GET /api/v1/payments/lookup?external_order_id=INV-2026-001
 ```
 
 Rules:
 
-- `application_code` wajib
-- `application_code` harus sama dengan aplikasi yang terautentikasi
+- `application_code` opsional
+- jika `application_code` dikirim, nilainya harus sama dengan aplikasi yang terautentikasi
 - lookup tetap di-scope ke aplikasi yang terautentikasi
 
 Response `200`:
@@ -745,10 +750,10 @@ POST /api/v1/payments/{payment_id}/cancel
 
 Perilaku saat ini:
 
-- hanya mengubah status internal ke `FAILED`
-- tidak melakukan request cancel ke provider
+- hanya didukung untuk payment internal yang masih `CREATED` dan belum punya transaksi provider
+- payment yang sudah provider-managed akan ditolak karena belum ada provider-side cancel API
 
-Response `200`:
+Response `200` hanya untuk kasus internal pre-provider:
 
 ```json
 {
@@ -769,6 +774,7 @@ Kemungkinan error:
 
 - `PAYMENT_NOT_FOUND`
 - `PAYMENT_ALREADY_FINAL`
+- `PAYMENT_CANCELLATION_NOT_SUPPORTED`
 
 ### 8.10 Refund Payment
 
@@ -788,7 +794,8 @@ Request body:
 Rules:
 
 - payment harus `PAID`
-- `amount` harus `<= amount payment`
+- `amount` harus sama dengan amount payment
+- partial refund belum didukung
 - provider harus mendukung refund API sesuai konfigurasi provider
 
 Response `200`:
@@ -884,7 +891,7 @@ Response `200`:
     "id": "wh_01hrxyz123abc456defghi789",
     "status": "pending",
     "attempt": 2,
-    "retried_at": "2026-03-12T09:40:00Z"
+    "queued_at": "2026-03-12T09:40:00Z"
   },
   "meta": {
     "timestamp": "2026-03-12T09:40:00Z",
@@ -895,10 +902,9 @@ Response `200`:
 
 Penting:
 
-- endpoint ini saat ini hanya mereset state delivery menjadi `pending`
+- endpoint ini mereset state delivery menjadi `pending` dan langsung mengantrekan resend webhook
 - `attempt` dinaikkan
-- event `webhook.dispatched` dicatat ulang
-- endpoint ini belum mengirim ulang HTTP webhook secara langsung
+- response menggunakan `202 Accepted`
 
 Error:
 
@@ -976,12 +982,12 @@ Client app sebaiknya merespons `2xx`, misalnya:
 
 Karakteristik pengiriman saat ini:
 
-- webhook dikirim sinkron pada thread request utama
+- webhook dikirim melalui queue job
 - timeout HTTP = 15 detik
 - response `2xx` dianggap berhasil
 - jika gagal, status delivery menjadi `failed`
 - `next_retry_at` dihitung dengan backoff `1m`, `5m`, `30m`, `2h`, `12h`
-- belum ada worker otomatis yang mengeksekusi retry berdasarkan `next_retry_at`
+- command scheduler `webhook-deliveries:retry-due` akan mengantrekan retry yang sudah jatuh tempo
 
 ## 10. Error Codes
 
@@ -993,6 +999,7 @@ Karakteristik pengiriman saat ini:
 | `PAYMENT_NOT_FOUND` | 404 | payment tidak ditemukan dalam scope aplikasi |
 | `PAYMENT_METHOD_NOT_AVAILABLE` | 422 | mapping method tidak tersedia untuk provider |
 | `PAYMENT_ALREADY_FINAL` | 409 | payment sudah final atau tidak eligible untuk aksi ini |
+| `PAYMENT_CANCELLATION_NOT_SUPPORTED` | 409 | payment sudah provider-managed dan belum bisa dibatalkan di provider |
 | `PROVIDER_NOT_FOUND` | 422 | provider tidak dikenali |
 | `PROVIDER_INACTIVE` | 422 | provider nonaktif |
 | `PROVIDER_ERROR` | 502 | provider mengembalikan error |
@@ -1022,14 +1029,14 @@ Karakteristik pengiriman saat ini:
 | `POST` | `/api/v1/payments/{payment_id}/cancel` | `X-API-Key` | mark payment failed |
 | `POST` | `/api/v1/payments/{payment_id}/refund` | `X-API-Key` | refund paid payment |
 | `GET` | `/api/v1/webhook-deliveries` | `X-API-Key` | list webhook deliveries |
-| `POST` | `/api/v1/webhook-deliveries/{delivery_id}/retry` | `X-API-Key` | reset delivery for manual retry |
+| `POST` | `/api/v1/webhook-deliveries/{delivery_id}/retry` | `X-API-Key` | queue resend untuk manual retry |
 
 ## 12. Implementation Notes
 
-- `application_code` pada create dan lookup selalu divalidasi agar sama dengan aplikasi yang terautentikasi.
+- `application_code` pada create dan lookup bersifat opsional; jika dikirim nilainya harus sama dengan aplikasi yang terautentikasi.
 - list payment selalu di-scope ke aplikasi yang terautentikasi, meskipun `application_code` dikirim di query.
-- create payment memicu event `payment.created` dan mencoba mengirim webhook segera setelah commit.
-- `cancel` saat ini tidak melakukan request cancel ke provider.
+- create payment memicu event `payment.created` dan mengantrekan webhook setelah commit.
+- `cancel` tidak tersedia untuk payment yang sudah masuk ke lifecycle provider sampai provider-side cancel diimplementasikan.
 - `sync` adalah endpoint manual polling yang paling akurat untuk kasus callback provider gagal diterima client app.
 - provider yang saat ini didukung di code adalah `tripay`, `midtrans`, dan `xendit`.
 - provider config dikelola via admin web panel, bukan JSON admin API.

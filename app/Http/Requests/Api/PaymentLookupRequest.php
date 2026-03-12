@@ -7,14 +7,16 @@ class PaymentLookupRequest extends ClientAppRequest
     protected function prepareForValidation(): void
     {
         $this->merge([
-            'application_code' => strtoupper((string) $this->input('application_code', '')),
+            'application_code' => $this->filled('application_code')
+                ? strtoupper((string) $this->input('application_code'))
+                : null,
         ]);
     }
 
     public function rules(): array
     {
         return [
-            'application_code' => ['required', 'string', 'max:20'],
+            'application_code' => ['nullable', 'string', 'max:20'],
             'external_order_id' => ['required', 'string', 'max:100'],
         ];
     }

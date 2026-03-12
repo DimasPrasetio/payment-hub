@@ -15,6 +15,7 @@ class PaymentMethodController extends ApiController
 
         $methods = PaymentMethodMapping::query()
             ->when($filters['active_only'] ?? true, fn ($query) => $query->where('is_active', true))
+            ->whereHas('paymentProvider', fn ($query) => $query->where('is_active', true))
             ->when($filters['provider_code'] ?? null, fn ($query, $code) => $query->where('provider_code', $code))
             ->when($filters['group'] ?? null, fn ($query, $group) => $query->where('group', $group))
             ->when($filters['amount'] ?? null, function ($query, $amount) {

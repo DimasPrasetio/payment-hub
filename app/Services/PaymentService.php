@@ -23,19 +23,19 @@ class PaymentService
     public function __construct(
         private readonly ProviderResolver $providerResolver,
         private readonly WebhookService $webhookService,
-    ) {
-    }
+    ) {}
 
     public function create(Application $application, array $attributes): array
     {
         $provider = $this->resolveProvider($application, $attributes['provider_code'] ?? null);
         $adapter = $this->providerResolver->resolve($provider->code);
         $mapping = $this->resolvePaymentMethod($provider->code, $attributes['payment_method'], $attributes['amount']);
+        $storedIdempotencyKey = $this->storedIdempotencyKey($application, $attributes['idempotency_key'] ?? null);
 
-        if (! empty($attributes['idempotency_key'])) {
+        if ($storedIdempotencyKey !== null) {
             $existingPayment = PaymentOrder::query()
                 ->with(['application:id,code', 'latestProviderTransaction'])
-                ->where('idempotency_key', $attributes['idempotency_key'])
+                ->where('idempotency_key', $storedIdempotencyKey)
                 ->first();
 
             if ($existingPayment) {
@@ -70,13 +70,13 @@ class PaymentService
             );
         }
 
-        $result = DB::transaction(function () use ($application, $attributes, $provider, $adapter, $mapping) {
+        $result = DB::transaction(function () use ($application, $attributes, $provider, $adapter, $mapping, $storedIdempotencyKey) {
             $payment = PaymentOrder::query()->create([
                 'public_id' => $this->publicId('pay_'),
                 'application_id' => $application->id,
                 'tenant_id' => $attributes['tenant_id'] ?? null,
                 'external_order_id' => $attributes['external_order_id'],
-                'idempotency_key' => $attributes['idempotency_key'] ?? null,
+                'idempotency_key' => $storedIdempotencyKey,
                 'merchant_ref' => $this->merchantReference($application),
                 'provider_code' => $provider->code,
                 'payment_method' => $mapping->internal_code,
@@ -130,7 +130,7 @@ class PaymentService
             ];
         });
 
-        $this->dispatchWebhookDelivery($result['payment'], $result['delivery']);
+        $this->queueWebhookDelivery($result['delivery']);
 
         return [
             'payment' => $result['payment']->fresh(['application:id,code', 'latestProviderTransaction']),
@@ -140,10 +140,20 @@ class PaymentService
 
     public function cancel(PaymentOrder $payment): PaymentOrder
     {
-        if (in_array($payment->status, [PaymentOrderStatus::Paid, PaymentOrderStatus::Failed, PaymentOrderStatus::Expired, PaymentOrderStatus::Refunded], true)) {
+        $payment->loadMissing('latestProviderTransaction');
+
+        if ($payment->status->isFinal()) {
             throw new ApiException(
                 'PAYMENT_ALREADY_FINAL',
-                'Payment is already in final state: ' . $payment->status->value,
+                'Payment is already in final state: '.$payment->status->value,
+                409,
+            );
+        }
+
+        if (! $this->canCancelPayment($payment)) {
+            throw new ApiException(
+                'PAYMENT_CANCELLATION_NOT_SUPPORTED',
+                'Provider-side cancellation is not available for this payment. Wait until the payment expires naturally or process a refund after payment.',
                 409,
             );
         }
@@ -167,7 +177,7 @@ class PaymentService
             ];
         });
 
-        $this->dispatchWebhookDelivery($result['payment'], $result['delivery']);
+        $this->queueWebhookDelivery($result['delivery']);
 
         return $result['payment']->fresh(['application:id,code', 'latestProviderTransaction']);
     }
@@ -177,7 +187,7 @@ class PaymentService
         if ($payment->status !== PaymentOrderStatus::Paid) {
             throw new ApiException(
                 'PAYMENT_ALREADY_FINAL',
-                'Payment is not eligible for refund from state: ' . $payment->status->value,
+                'Payment is not eligible for refund from state: '.$payment->status->value,
                 409,
             );
         }
@@ -193,7 +203,18 @@ class PaymentService
             );
         }
 
-        $provider = $payment->paymentProvider;
+        if ($amount !== (int) $payment->amount) {
+            throw new ApiException(
+                'VALIDATION_ERROR',
+                'The given data was invalid.',
+                422,
+                [
+                    'amount' => ['Partial refunds are not supported. The refund amount must match the full payment amount.'],
+                ],
+            );
+        }
+
+        $provider = $payment->paymentProvider ?? $this->findProviderByCode($payment->provider_code, false);
         $adapter = $this->providerResolver->resolve($payment->provider_code);
         $refund = $adapter->refund($payment, $amount, $reason, $provider);
 
@@ -201,6 +222,20 @@ class PaymentService
             $payment->forceFill([
                 'status' => PaymentOrderStatus::Refunded,
             ])->save();
+
+            $latestTransaction = $payment->latestProviderTransaction;
+
+            if ($latestTransaction) {
+                $latestTransaction->forceFill([
+                    'raw_response' => array_merge($latestTransaction->raw_response ?? [], [
+                        'refund' => $refund['raw_response'] ?? [
+                            'refund_reference' => $refund['refund_reference'] ?? null,
+                            'refund_amount' => $refund['refund_amount'] ?? $amount,
+                            'refund_method' => $refund['refund_method'] ?? 'api',
+                        ],
+                    ]),
+                ])->save();
+            }
 
             $this->recordEvent($payment, 'payment.refunded', [
                 'status' => PaymentOrderStatus::Refunded->value,
@@ -219,7 +254,7 @@ class PaymentService
             ];
         });
 
-        $this->dispatchWebhookDelivery($result['payment'], $result['delivery']);
+        $this->queueWebhookDelivery($result['delivery']);
 
         return $result['payment']->fresh(['application:id,code', 'latestProviderTransaction']);
     }
@@ -228,7 +263,7 @@ class PaymentService
     {
         $payment->loadMissing(['application:id,code,webhook_url', 'paymentProvider', 'latestProviderTransaction']);
 
-        $provider = $payment->paymentProvider ?? $this->findProviderByCode($payment->provider_code);
+        $provider = $payment->paymentProvider ?? $this->findProviderByCode($payment->provider_code, false);
         $adapter = $this->providerResolver->resolve($payment->provider_code);
         $sync = $adapter->queryTransaction($payment, $provider);
         $nextStatus = $sync['internal_status'] ?? PaymentOrderStatus::Pending;
@@ -252,11 +287,15 @@ class PaymentService
             $payment->loadMissing(['application:id,code,webhook_url', 'latestProviderTransaction']);
 
             $latestTransaction = $payment->latestProviderTransaction;
+            $currentStatus = $payment->status;
+            $statusChanged = $currentStatus->canTransitionFromProvider($nextStatus);
+            $delivery = null;
+            $eventType = null;
 
             if ($latestTransaction) {
                 $latestTransaction->forceFill(array_filter([
                     'provider_reference' => $sync['provider_reference'] ?: $latestTransaction->provider_reference,
-                    'paid_at' => $nextStatus === PaymentOrderStatus::Paid
+                    'paid_at' => $statusChanged && $nextStatus === PaymentOrderStatus::Paid
                         ? ($sync['paid_at'] ?? $latestTransaction->paid_at)
                         : $latestTransaction->paid_at,
                     'raw_response' => array_merge($latestTransaction->raw_response ?? [], [
@@ -265,30 +304,18 @@ class PaymentService
                 ], static fn ($value) => $value !== null))->save();
             }
 
-            $statusChanged = $payment->status !== $nextStatus;
-            $delivery = null;
-            $eventType = null;
-
             if ($statusChanged) {
-                $previousStatus = $payment->status;
                 $updates = [
                     'status' => $nextStatus,
                 ];
 
-                if ($nextStatus === PaymentOrderStatus::Paid) {
+                if ($nextStatus === PaymentOrderStatus::Paid && ($sync['paid_at'] ?? null) !== null) {
+                    $updates['paid_at'] = $sync['paid_at'];
+                } elseif ($nextStatus === PaymentOrderStatus::Paid && $payment->paid_at === null) {
                     $updates['paid_at'] = $sync['paid_at'] ?? now();
                 }
 
                 $payment->forceFill($updates)->save();
-
-                $this->recordEvent($payment, 'provider.status_synced', [
-                    'provider' => $provider->code,
-                    'provider_status' => $sync['provider_status'] ?? null,
-                    'previous_status' => $previousStatus->value,
-                    'current_status' => $nextStatus->value,
-                    'provider_reference' => $sync['provider_reference'] ?? null,
-                    'synced_at' => now()->toIso8601String(),
-                ]);
 
                 $eventType = $this->eventTypeForStatus($nextStatus);
 
@@ -305,6 +332,16 @@ class PaymentService
                 }
             }
 
+            $this->recordEvent($payment, 'provider.status_synced', [
+                'provider' => $provider->code,
+                'provider_status' => $sync['provider_status'] ?? null,
+                'previous_status' => $currentStatus->value,
+                'current_status' => $payment->status->value,
+                'transition_applied' => $statusChanged,
+                'provider_reference' => $sync['provider_reference'] ?? null,
+                'synced_at' => now()->toIso8601String(),
+            ]);
+
             return [
                 'payment' => $payment,
                 'delivery' => $delivery,
@@ -315,9 +352,7 @@ class PaymentService
             ];
         });
 
-        if (($result['delivery'] ?? null) instanceof WebhookDelivery) {
-            $this->dispatchWebhookDelivery($result['payment'], $result['delivery']);
-        }
+        $this->queueWebhookDelivery($result['delivery'] ?? null);
 
         return [
             'payment' => $result['payment']->fresh(['application:id,code', 'latestProviderTransaction']),
@@ -330,7 +365,25 @@ class PaymentService
 
     public function retryWebhook(WebhookDelivery $delivery): WebhookDelivery
     {
-        return DB::transaction(function () use ($delivery) {
+        $delivery = DB::transaction(function () use ($delivery) {
+            $delivery = WebhookDelivery::query()->lockForUpdate()->findOrFail($delivery->id);
+
+            if ($delivery->status === WebhookDeliveryStatus::Success) {
+                throw new ApiException(
+                    'VALIDATION_ERROR',
+                    'Webhook delivery has already succeeded and cannot be retried.',
+                    422,
+                );
+            }
+
+            if ($delivery->status === WebhookDeliveryStatus::Pending) {
+                throw new ApiException(
+                    'VALIDATION_ERROR',
+                    'Webhook delivery is already pending and cannot be retried yet.',
+                    422,
+                );
+            }
+
             $delivery->forceFill([
                 'status' => WebhookDeliveryStatus::Pending,
                 'attempt' => $delivery->attempt + 1,
@@ -339,23 +392,17 @@ class PaymentService
                 'next_retry_at' => null,
             ])->save();
 
-            $payment = $delivery->paymentOrder()->with('application:id,code,webhook_url')->firstOrFail();
-
-            $this->recordEvent($payment, 'webhook.dispatched', [
-                'target_url' => $delivery->target_url,
-                'event' => $delivery->event_type,
-                'delivery_id' => $delivery->public_id,
-                'attempt' => $delivery->attempt,
-                'status' => $delivery->status->value,
-            ]);
-
             return $delivery;
         });
+
+        $this->queueWebhookDelivery($delivery);
+
+        return $delivery;
     }
 
     public function handleProviderCallback(string $providerCode, Request $request): array
     {
-        $provider = $this->findProviderByCode($providerCode);
+        $provider = $this->findProviderByCode($providerCode, false);
         $adapter = $this->providerResolver->resolve($provider->code);
         $callback = $adapter->verifyCallback($request, $provider);
 
@@ -398,6 +445,9 @@ class PaymentService
         }
 
         $result = DB::transaction(function () use ($payment, $provider, $callback) {
+            $payment->refresh();
+            $payment->loadMissing(['application:id,code,webhook_url', 'latestProviderTransaction']);
+
             $this->recordEvent($payment, 'callback.received', [
                 'provider' => $provider->code,
                 'provider_status' => $callback['provider_status'] ?? null,
@@ -406,40 +456,43 @@ class PaymentService
                 'provider_reference' => $callback['provider_reference'] ?? null,
             ]);
 
-            if (in_array($payment->status, [PaymentOrderStatus::Paid, PaymentOrderStatus::Failed, PaymentOrderStatus::Expired, PaymentOrderStatus::Refunded], true)) {
+            $nextStatus = $callback['internal_status'] ?? PaymentOrderStatus::Pending;
+            $currentStatus = $payment->status;
+            $statusChanged = $currentStatus->canTransitionFromProvider($nextStatus);
+            $latestTransaction = $payment->latestProviderTransaction;
+
+            if ($latestTransaction) {
+                $latestTransaction->forceFill(array_filter([
+                    'provider_reference' => $callback['provider_reference'] ?: $latestTransaction->provider_reference,
+                    'paid_at' => $statusChanged && $nextStatus === PaymentOrderStatus::Paid
+                        ? ($callback['paid_at'] ?? $latestTransaction->paid_at)
+                        : $latestTransaction->paid_at,
+                    'raw_response' => array_merge($latestTransaction->raw_response ?? [], [
+                        'callback' => $callback['payload'] ?? [],
+                    ]),
+                ], static fn ($value) => $value !== null))->save();
+            }
+
+            if (! $statusChanged) {
                 return [
                     'accepted' => true,
                     'status_changed' => false,
-                    'final_state' => true,
                     'payment' => $payment,
                     'delivery' => null,
                 ];
             }
 
-            $nextStatus = $callback['internal_status'] ?? PaymentOrderStatus::Pending;
             $updates = [
                 'status' => $nextStatus,
             ];
 
-            if ($nextStatus === PaymentOrderStatus::Paid) {
+            if ($nextStatus === PaymentOrderStatus::Paid && ($callback['paid_at'] ?? null) !== null) {
+                $updates['paid_at'] = $callback['paid_at'];
+            } elseif ($nextStatus === PaymentOrderStatus::Paid && $payment->paid_at === null) {
                 $updates['paid_at'] = $callback['paid_at'] ?? now();
             }
 
             $payment->forceFill($updates)->save();
-
-            $latestTransaction = $payment->latestProviderTransaction;
-
-            if ($latestTransaction) {
-                $latestTransaction->forceFill([
-                    'provider_reference' => $callback['provider_reference'] ?: $latestTransaction->provider_reference,
-                    'paid_at' => $nextStatus === PaymentOrderStatus::Paid
-                        ? ($callback['paid_at'] ?? now())
-                        : $latestTransaction->paid_at,
-                    'raw_response' => array_merge($latestTransaction->raw_response ?? [], [
-                        'callback' => $callback['payload'] ?? [],
-                    ]),
-                ])->save();
-            }
 
             $eventType = $this->eventTypeForStatus($nextStatus);
             $delivery = null;
@@ -457,39 +510,75 @@ class PaymentService
 
             return [
                 'accepted' => true,
-                'status_changed' => true,
+                'status_changed' => $statusChanged,
                 'event_type' => $eventType,
                 'payment' => $payment,
                 'delivery' => $delivery,
             ];
         });
 
-        if (($result['delivery'] ?? null) instanceof WebhookDelivery) {
-            $this->dispatchWebhookDelivery($result['payment'], $result['delivery']);
-        }
+        $this->queueWebhookDelivery($result['delivery'] ?? null);
 
         unset($result['payment'], $result['delivery']);
 
         return $result;
     }
 
-    protected function dispatchWebhookDelivery(PaymentOrder $payment, ?WebhookDelivery $delivery): ?WebhookDelivery
+    public function dispatchDueWebhookRetries(int $limit = 100): int
+    {
+        $count = 0;
+
+        $dueDeliveryIds = WebhookDelivery::query()
+            ->where('status', WebhookDeliveryStatus::Failed->value)
+            ->whereNotNull('next_retry_at')
+            ->where('next_retry_at', '<=', now())
+            ->orderBy('next_retry_at')
+            ->limit($limit)
+            ->pluck('id');
+
+        foreach ($dueDeliveryIds as $deliveryId) {
+            $delivery = DB::transaction(function () use ($deliveryId) {
+                $delivery = WebhookDelivery::query()->lockForUpdate()->find($deliveryId);
+
+                if (! $delivery || $delivery->status !== WebhookDeliveryStatus::Failed) {
+                    return null;
+                }
+
+                if (! $delivery->next_retry_at || $delivery->next_retry_at->isFuture()) {
+                    return null;
+                }
+
+                $delivery->forceFill([
+                    'status' => WebhookDeliveryStatus::Pending,
+                    'attempt' => $delivery->attempt + 1,
+                    'response_code' => null,
+                    'response_body' => null,
+                    'next_retry_at' => null,
+                ])->save();
+
+                return $delivery;
+            });
+
+            if (! $delivery instanceof WebhookDelivery) {
+                continue;
+            }
+
+            $this->queueWebhookDelivery($delivery);
+            $count++;
+        }
+
+        return $count;
+    }
+
+    protected function queueWebhookDelivery(?WebhookDelivery $delivery): ?WebhookDelivery
     {
         if (! $delivery) {
             return null;
         }
 
-        $payment->loadMissing('application:id,code,webhook_url');
+        $this->webhookService->queue($delivery);
 
-        $this->recordEvent($payment, 'webhook.dispatched', [
-            'target_url' => $delivery->target_url,
-            'event' => $delivery->event_type,
-            'delivery_id' => $delivery->public_id,
-            'attempt' => $delivery->attempt,
-            'status' => $delivery->status->value,
-        ]);
-
-        return $this->webhookService->deliver($delivery);
+        return $delivery;
     }
 
     protected function resolveProvider(Application $application, ?string $providerCode): PaymentProvider
@@ -529,14 +618,13 @@ class PaymentService
         PaymentMethodMapping $mapping,
         PaymentProvider $provider,
         PaymentProviderInterface $adapter
-    ): ProviderTransaction
-    {
+    ): ProviderTransaction {
         $transaction = $adapter->createTransaction($payment, $mapping, $provider);
 
         return $payment->providerTransactions()->create([
             'provider' => $provider->code,
             'merchant_ref' => $payment->merchant_ref,
-            'provider_reference' => $transaction['provider_reference'] ?? strtoupper($provider->code . '_' . Str::random(12)),
+            'provider_reference' => $transaction['provider_reference'] ?? strtoupper($provider->code.'_'.Str::random(12)),
             'payment_method' => $transaction['payment_method'] ?? $mapping->provider_method_code,
             'payment_url' => $transaction['payment_url'] ?? null,
             'pay_code' => $transaction['pay_code'] ?? null,
@@ -651,9 +739,18 @@ class PaymentService
         return $value;
     }
 
+    protected function storedIdempotencyKey(Application $application, ?string $idempotencyKey): ?string
+    {
+        if (! is_string($idempotencyKey) || $idempotencyKey === '') {
+            return null;
+        }
+
+        return hash('sha256', $application->id.'|'.$idempotencyKey);
+    }
+
     protected function publicId(string $prefix): string
     {
-        return $prefix . Str::lower((string) Str::ulid());
+        return $prefix.Str::lower((string) Str::ulid());
     }
 
     protected function merchantReference(Application $application): string
@@ -665,7 +762,7 @@ class PaymentService
         return $merchantRef;
     }
 
-    protected function findProviderByCode(string $providerCode): PaymentProvider
+    protected function findProviderByCode(string $providerCode, bool $requireActive = true): PaymentProvider
     {
         $provider = PaymentProvider::query()->where('code', $providerCode)->first();
 
@@ -677,7 +774,7 @@ class PaymentService
             );
         }
 
-        if (! $provider->is_active) {
+        if ($requireActive && ! $provider->is_active) {
             throw new ApiException(
                 'PROVIDER_INACTIVE',
                 'Provider is inactive.',
@@ -686,6 +783,12 @@ class PaymentService
         }
 
         return $provider;
+    }
+
+    protected function canCancelPayment(PaymentOrder $payment): bool
+    {
+        return $payment->status === PaymentOrderStatus::Created
+            && ! $payment->latestProviderTransaction;
     }
 
     protected function eventTypeForStatus(PaymentOrderStatus $status): ?string
@@ -715,8 +818,3 @@ class PaymentService
         );
     }
 }
-
-
-
-
-

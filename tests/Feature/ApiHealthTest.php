@@ -17,6 +17,7 @@ class ApiHealthTest extends TestCase
         $response->assertJsonPath('status', 'healthy');
         $response->assertJsonPath('version', '1.0.0');
         $response->assertJsonPath('services.database', 'connected');
+        $response->assertJsonPath('services.queue', 'sync');
         $response->assertJsonStructure([
             'status',
             'version',

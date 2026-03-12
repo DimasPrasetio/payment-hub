@@ -22,7 +22,7 @@ class HealthController extends ApiController
                 'services' => [
                     'database' => 'connected',
                     'redis' => $this->redisStatus(),
-                    'queue' => 'running',
+                    'queue' => $this->queueStatus(),
                     'payment_orders_table' => Schema::hasTable('payment_orders'),
                 ],
             ]);
@@ -52,5 +52,25 @@ class HealthController extends ApiController
         } catch (Throwable $exception) {
             return 'disconnected';
         }
+    }
+
+    protected function queueStatus(): string
+    {
+        $defaultConnection = config('queue.default');
+
+        if (! is_string($defaultConnection) || $defaultConnection === '') {
+            return 'not_configured';
+        }
+
+        $connection = config("queue.connections.{$defaultConnection}");
+        $driver = is_array($connection) ? ($connection['driver'] ?? null) : null;
+
+        return match ($driver) {
+            'sync' => 'sync',
+            'database' => Schema::hasTable((string) ($connection['table'] ?? 'jobs')) ? 'configured' : 'misconfigured',
+            'redis' => $this->redisStatus() === 'connected' ? 'configured' : 'disconnected',
+            'sqs', 'beanstalkd' => 'configured',
+            default => 'not_configured',
+        };
     }
 }

@@ -17,15 +17,18 @@ class XenditProvider implements PaymentProviderInterface
 {
     public function __construct(
         private readonly XenditClient $client,
-    ) {
-    }
+    ) {}
 
     public function createTransaction(PaymentOrder $payment, PaymentMethodMapping $mapping, PaymentProvider $provider): array
     {
         $payload = $this->buildInvoicePayload($payment, $mapping, $provider);
 
         if (! $this->hasApiCredentials($provider)) {
-            return $this->createStubTransaction($payment, $mapping, $provider, $payload);
+            throw new ApiException(
+                'PROVIDER_CONFIG_INCOMPLETE',
+                'Xendit provider credentials are incomplete.',
+                422,
+            );
         }
 
         try {
@@ -37,7 +40,7 @@ class XenditProvider implements PaymentProviderInterface
         $data = $this->normalizeSdkPayload($response);
 
         return [
-            'provider_reference' => (string) ($data['id'] ?? strtoupper('XND_' . Str::random(12))),
+            'provider_reference' => (string) ($data['id'] ?? strtoupper('XND_'.Str::random(12))),
             'payment_method' => $mapping->provider_method_code,
             'payment_url' => $data['invoice_url'] ?? null,
             'pay_code' => null,
@@ -51,17 +54,11 @@ class XenditProvider implements PaymentProviderInterface
     public function queryTransaction(PaymentOrder $payment, PaymentProvider $provider): array
     {
         if (! $this->hasApiCredentials($provider)) {
-            return [
-                'provider' => $provider->code,
-                'merchant_ref' => $payment->merchant_ref,
-                'status' => 'PENDING',
-                'provider_status' => 'PENDING',
-                'internal_status' => PaymentOrderStatus::Pending,
-                'amount' => (int) $payment->amount,
-                'provider_reference' => optional($payment->latestProviderTransaction)->provider_reference,
-                'paid_at' => null,
-                'payload' => [],
-            ];
+            throw new ApiException(
+                'PROVIDER_CONFIG_INCOMPLETE',
+                'Xendit provider credentials are incomplete.',
+                422,
+            );
         }
 
         try {
@@ -151,7 +148,7 @@ class XenditProvider implements PaymentProviderInterface
             );
         }
 
-        $refundReference = 'RFND_' . strtolower(Str::uuid()->toString());
+        $refundReference = 'RFND_'.strtolower(Str::uuid()->toString());
 
         try {
             $response = $this->client->createRefund($provider, $refundReference, [
@@ -230,13 +227,13 @@ class XenditProvider implements PaymentProviderInterface
         PaymentProvider $provider,
         array $payload
     ): array {
-        $providerReference = 'inv_' . strtolower(Str::random(18));
+        $providerReference = 'inv_'.strtolower(Str::random(18));
         $baseUrl = rtrim((string) data_get($provider->config, 'public_base_url', 'https://checkout.xendit.co'), '/');
 
         return [
             'provider_reference' => $providerReference,
             'payment_method' => $mapping->provider_method_code,
-            'payment_url' => $baseUrl . '/web/' . $providerReference,
+            'payment_url' => $baseUrl.'/web/'.$providerReference,
             'pay_code' => null,
             'qr_string' => null,
             'qr_url' => null,
@@ -245,7 +242,7 @@ class XenditProvider implements PaymentProviderInterface
                 'status' => 'PENDING',
                 'mode' => 'adapter_stub',
                 'id' => $providerReference,
-                'invoice_url' => $baseUrl . '/web/' . $providerReference,
+                'invoice_url' => $baseUrl.'/web/'.$providerReference,
             ],
         ];
     }

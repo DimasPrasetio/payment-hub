@@ -10,9 +10,7 @@ use Throwable;
 
 class ProviderCallbackController extends ApiController
 {
-    public function __construct(private readonly PaymentService $paymentService)
-    {
-    }
+    public function __construct(private readonly PaymentService $paymentService) {}
 
     public function store(Request $request, string $providerCode): JsonResponse
     {
@@ -23,27 +21,30 @@ class ProviderCallbackController extends ApiController
                 'success' => true,
             ]);
         } catch (ApiException $exception) {
-            if (in_array($exception->errorCode(), ['INVALID_CALLBACK_SIGNATURE', 'PAYMENT_NOT_FOUND', 'PROVIDER_NOT_FOUND', 'PROVIDER_INACTIVE'], true)) {
-                return response()->json([
-                    'success' => false,
-                    'error' => [
-                        'code' => $exception->errorCode(),
-                        'message' => $exception->getMessage(),
-                    ],
-                ], $exception->status());
-            }
-
-            report($exception);
-
-            return response()->json([
-                'success' => true,
-            ]);
+            return $this->errorResponse(
+                $exception->errorCode(),
+                $exception->getMessage(),
+                $exception->status(),
+            );
         } catch (Throwable $exception) {
             report($exception);
 
-            return response()->json([
-                'success' => true,
-            ]);
+            return $this->errorResponse(
+                'INTERNAL_ERROR',
+                'An unexpected internal error occurred while processing the callback.',
+                500,
+            );
         }
+    }
+
+    protected function errorResponse(string $code, string $message, int $status): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'error' => [
+                'code' => $code,
+                'message' => $message,
+            ],
+        ], $status);
     }
 }

@@ -27,6 +27,25 @@ enum PaymentOrderStatus: string
         return in_array($this, [self::Failed, self::Expired], true);
     }
 
+    public function isFinal(): bool
+    {
+        return in_array($this, [self::Paid, self::Failed, self::Expired, self::Refunded], true);
+    }
+
+    public function canTransitionFromProvider(self $nextStatus): bool
+    {
+        if ($this === $nextStatus) {
+            return false;
+        }
+
+        return match ($this) {
+            self::Created, self::Pending => true,
+            self::Failed, self::Expired => in_array($nextStatus, [self::Paid, self::Refunded], true),
+            self::Paid => $nextStatus === self::Refunded,
+            self::Refunded => false,
+        };
+    }
+
     public static function values(): array
     {
         return array_map(
