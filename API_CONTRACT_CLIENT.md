@@ -2,9 +2,13 @@
 
 ## Payment Orchestrator Client API
 
-### Version
+### Release Version
 
-`1.0.0`
+Mengikuti file root [`VERSION`](./VERSION) dan git tag release `v{version}`.
+
+### API Version
+
+`v1`
 
 ### Base URL
 
@@ -272,7 +276,8 @@ Response `200`:
 ```json
 {
   "status": "healthy",
-  "version": "1.0.0",
+  "version": "{release_version}",
+  "api_version": "v1",
   "timestamp": "2026-03-12T09:00:00Z",
   "services": {
     "database": "connected",
@@ -288,7 +293,8 @@ Response `503` saat database tidak tersedia:
 ```json
 {
   "status": "degraded",
-  "version": "1.0.0",
+  "version": "{release_version}",
+  "api_version": "v1",
   "timestamp": "2026-03-12T09:00:00Z",
   "services": {
     "database": "disconnected"

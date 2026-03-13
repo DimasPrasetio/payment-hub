@@ -2,9 +2,13 @@
 
 ## Payment Orchestrator / Payment Hub
 
-### Version
+### Release Version
 
-`1.0.0`
+Mengikuti file root [`VERSION`](./VERSION) dan git tag release `v{version}`.
+
+### API Version
+
+`v1`
 
 ### Base URL
 

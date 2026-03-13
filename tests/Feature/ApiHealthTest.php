@@ -15,12 +15,14 @@ class ApiHealthTest extends TestCase
 
         $response->assertOk();
         $response->assertJsonPath('status', 'healthy');
-        $response->assertJsonPath('version', '1.0.0');
+        $response->assertJsonPath('version', config('versioning.release'));
+        $response->assertJsonPath('api_version', config('versioning.api.current'));
         $response->assertJsonPath('services.database', 'connected');
         $response->assertJsonPath('services.queue', 'sync');
         $response->assertJsonStructure([
             'status',
             'version',
+            'api_version',
             'timestamp',
             'services' => ['database', 'redis', 'queue'],
         ]);

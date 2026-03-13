@@ -12,12 +12,16 @@ class HealthController extends ApiController
 {
     public function __invoke(): JsonResponse
     {
+        $releaseVersion = (string) config('versioning.release');
+        $apiVersion = (string) config('versioning.api.current', 'v1');
+
         try {
             DB::connection()->getPdo();
 
             return response()->json([
                 'status' => 'healthy',
-                'version' => '1.0.0',
+                'version' => $releaseVersion,
+                'api_version' => $apiVersion,
                 'timestamp' => now()->toIso8601String(),
                 'services' => [
                     'database' => 'connected',
@@ -29,7 +33,8 @@ class HealthController extends ApiController
         } catch (Throwable $exception) {
             return response()->json([
                 'status' => 'degraded',
-                'version' => '1.0.0',
+                'version' => $releaseVersion,
+                'api_version' => $apiVersion,
                 'timestamp' => now()->toIso8601String(),
                 'services' => [
                     'database' => 'disconnected',

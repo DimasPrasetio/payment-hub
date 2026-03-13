@@ -9,7 +9,7 @@ use App\Http\Controllers\Api\ProviderController;
 use App\Http\Controllers\Api\WebhookDeliveryController;
 use Illuminate\Support\Facades\Route;
 
-Route::prefix('v1')->group(function () {
+Route::prefix((string) config('versioning.api.current', 'v1'))->group(function () {
     Route::get('/health', HealthController::class)->name('api.health');
     Route::post('/callback/{provider_code}', [ProviderCallbackController::class, 'store'])->name('api.callbacks.store');
 
