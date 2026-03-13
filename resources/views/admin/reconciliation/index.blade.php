@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Tujuan Halaman</span>
+            <span class="page-hero-value">Mendeteksi transaksi yang butuh perhatian karena data provider, webhook, atau status tidak sinkron.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Cara Pakai</span>
+            <span class="page-hero-value">Pilih jenis isu jika ingin fokus ke satu masalah. Kosongkan jika ingin melihat semuanya.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Rekonsiliasi</p>
+                <h3 class="section-title">Pilih anomali yang ingin ditinjau</h3>
+                <p class="section-copy">Halaman ini dirancang untuk membantu operator menemukan selisih data secepat mungkin.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field">
                 <label for="application" class="form-label">Application</label>

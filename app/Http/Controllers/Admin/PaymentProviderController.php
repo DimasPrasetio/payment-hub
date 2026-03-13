@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Requests\Admin\ProviderIndexRequest;
 use App\Http\Requests\Admin\UpdateProviderRequest;
 use App\Models\PaymentProvider;
+use App\Support\ProviderConsoleProfile;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 
@@ -71,6 +72,7 @@ class PaymentProviderController extends AdminController
             'description' => 'Ringkasan konfigurasi provider, method mapping, aplikasi yang terhubung, dan transaksi terbaru.',
         ], [
             'provider' => $provider,
+            'providerProfile' => ProviderConsoleProfile::for($provider->code),
             'providerConfig' => $this->providerConfig($provider),
             'configuredSecrets' => $this->configuredSecrets($provider),
         ]);
@@ -94,33 +96,17 @@ class PaymentProviderController extends AdminController
 
     protected function providerConfig(PaymentProvider $provider): array
     {
-        return array_merge([
-            'merchant_code' => null,
-            'api_key' => null,
-            'private_key' => null,
-            'client_key' => null,
-            'server_key' => null,
-            'secret_key' => null,
-            'callback_token' => null,
-            'api_base_url' => null,
-            'public_base_url' => null,
-            'return_url' => null,
-            'supports_refund_api' => false,
-        ], $provider->config ?? []);
+        return array_merge(ProviderConsoleProfile::defaults(), $provider->config ?? []);
     }
 
     protected function configuredSecrets(PaymentProvider $provider): array
     {
         $config = $provider->config ?? [];
+        $profile = ProviderConsoleProfile::for($provider->code);
 
-        return collect([
-            'api_key' => 'API Key',
-            'private_key' => 'Private Key',
-            'client_key' => 'Client Key',
-            'server_key' => 'Server Key',
-            'secret_key' => 'Secret Key',
-            'callback_token' => 'Callback Token',
-        ])->filter(fn (string $label, string $key) => filled($config[$key] ?? null))
+        return collect($profile['fields'])
+            ->filter(fn (array $field) => ($field['sensitive'] ?? false) && filled($config[$field['key']] ?? null))
+            ->mapWithKeys(fn (array $field) => [$field['key'] => $field['label']])
             ->all();
     }
 
@@ -128,30 +114,50 @@ class PaymentProviderController extends AdminController
     {
         $current = $provider->config ?? [];
         $config = $current;
+        $profile = ProviderConsoleProfile::for($provider->code);
+        $fields = collect($profile['fields']);
+        $plainFields = $fields->reject(fn (array $field) => $field['sensitive'] ?? false);
+        $secretFields = $fields->filter(fn (array $field) => $field['sensitive'] ?? false);
 
-        foreach (['merchant_code', 'api_base_url', 'public_base_url', 'return_url'] as $field) {
-            $value = trim((string) ($validated[$field] ?? ''));
+        foreach ($plainFields as $field) {
+            $key = $field['key'];
 
-            if ($value === '') {
-                unset($config[$field]);
+            if (! array_key_exists($key, $validated)) {
                 continue;
             }
 
-            $config[$field] = $value;
+            $value = trim((string) ($validated[$key] ?? ''));
+
+            if ($value === '') {
+                unset($config[$key]);
+                continue;
+            }
+
+            $config[$key] = $value;
         }
 
-        foreach (['api_key', 'private_key', 'client_key', 'server_key', 'secret_key', 'callback_token'] as $field) {
-            $value = trim((string) ($validated[$field] ?? ''));
+        foreach ($secretFields as $field) {
+            $key = $field['key'];
+
+            if (! array_key_exists($key, $validated)) {
+                continue;
+            }
+
+            $value = trim((string) ($validated[$key] ?? ''));
 
             if ($value !== '') {
-                $config[$field] = $value;
+                $config[$key] = $value;
             }
         }
 
-        $supportsRefundApi = array_key_exists('supports_refund_api', $validated)
-            ? filter_var($validated['supports_refund_api'], FILTER_VALIDATE_BOOL)
-            : false;
-        $config['supports_refund_api'] = $supportsRefundApi;
+        if ($profile['supports_refund_toggle']) {
+            $supportsRefundApi = array_key_exists('supports_refund_api', $validated)
+                ? filter_var($validated['supports_refund_api'], FILTER_VALIDATE_BOOL)
+                : false;
+            $config['supports_refund_api'] = $supportsRefundApi;
+        } else {
+            unset($config['supports_refund_api']);
+        }
 
         $extraConfig = trim((string) ($validated['extra_config'] ?? ''));
 
@@ -159,6 +165,10 @@ class PaymentProviderController extends AdminController
             $decoded = json_decode($extraConfig, true);
 
             if (is_array($decoded)) {
+                $decoded = array_diff_key($decoded, array_flip(array_merge(
+                    ProviderConsoleProfile::knownConfigKeys(),
+                    ['supports_refund_api'],
+                )));
                 $config = array_merge($config, $decoded);
             }
         }

@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Fokus Halaman</span>
+            <span class="page-hero-value">Baca tren order, volume, dan distribusi provider atau aplikasi dalam satu tampilan.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Cara Pakai</span>
+            <span class="page-hero-value">Pilih rentang tanggal dan filter paling penting, lalu baca ringkasan dari atas ke bawah.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Statistik</p>
+                <h3 class="section-title">Tentukan data yang ingin dianalisis</h3>
+                <p class="section-copy">Kosongkan filter yang tidak dibutuhkan agar hasil tetap luas dan mudah dibaca.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field">
                 <label for="application" class="form-label">Application</label>

@@ -3,7 +3,30 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <x-slot:actions>
+            <a href="{{ route('admin.users.create') }}" class="provider-hero-link">Tambah User</a>
+        </x-slot:actions>
+
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Tujuan Halaman</span>
+            <span class="page-hero-value">Kelola akun admin yang boleh masuk ke panel dan memantau sistem.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Catatan</span>
+            <span class="page-hero-value">Nonaktifkan akun yang tidak dipakai lagi agar akses tetap aman.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter User</p>
+                <h3 class="section-title">Cari akun admin yang ingin dikelola</h3>
+                <p class="section-copy">Cukup isi nama, username, email, atau pilih status aktif.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field form-field-wide">
                 <label for="q" class="form-label">Cari User</label>
@@ -21,7 +44,6 @@
             <div class="form-actions">
                 <button type="submit" class="button-primary">Terapkan Filter</button>
                 <a href="{{ route('admin.users.index') }}" class="button-link">Reset Filter</a>
-                <a href="{{ route('admin.users.create') }}" class="button-link">Tambah User</a>
             </div>
         </form>
     </section>

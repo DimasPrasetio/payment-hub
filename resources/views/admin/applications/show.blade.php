@@ -3,6 +3,13 @@
 @section('title', $pageTitle)
 
 @section('content')
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription">
+        <x-slot:actions>
+            <a href="{{ route('admin.transactions') }}?application={{ $application->code }}" class="provider-hero-link">Lihat Transaksi</a>
+            <a href="{{ route('admin.webhooks') }}?application={{ $application->code }}" class="provider-hero-link">Lihat Webhook</a>
+        </x-slot:actions>
+    </x-page-hero>
+
     <section class="metric-grid">
         <x-metric-card label="Total Transaksi" :value="number_format($application->payment_orders_count)"
             caption="Jumlah transaksi dari aplikasi ini" tone="cyan" />
@@ -14,159 +21,146 @@
             caption="Jumlah notifikasi yang gagal terkirim" tone="rose" />
     </section>
 
-    <section class="detail-grid">
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Konfigurasi</p>
-                    <h3 class="section-title">Detail Aplikasi</h3>
+    <section class="workspace-grid">
+        <div class="workspace-main">
+            <article class="panel-card">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker">Pengelolaan Aplikasi</p>
+                        <h3 class="section-title">Edit konfigurasi client app</h3>
+                    </div>
                 </div>
-                <x-status-badge :label="$application->status ? 'Aktif' : 'Tidak Aktif'" :tone="$application->status ? 'emerald' : 'slate'" />
-            </div>
 
-            <dl class="description-list">
-                <div class="description-item">
-                    <dt>Kode Aplikasi</dt>
-                    <dd>{{ $application->code }}</dd>
-                </div>
-                <div class="description-item">
-                    <dt>Nama Aplikasi</dt>
-                    <dd>{{ $application->name }}</dd>
-                </div>
-                <div class="description-item">
-                    <dt>Default Provider</dt>
-                    <dd>{{ $application->defaultProvider?->name ?? $application->default_provider }}</dd>
-                </div>
-                <div class="description-item">
-                    <dt>Webhook URL</dt>
-                    <dd>{{ $application->webhook_url }}</dd>
-                </div>
-            </dl>
-        </article>
+                <form method="POST" action="{{ route('admin.applications.update', $application) }}" class="mt-6 space-y-6">
+                    @csrf
+                    @method('PUT')
+                    @include('admin.applications.partials.form', ['submitLabel' => 'Simpan Perubahan', 'application' => $application])
+                </form>
+            </article>
 
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Keamanan</p>
-                    <h3 class="section-title">Status Credential</h3>
+            <article class="panel-card">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker">Daftar Transaksi</p>
+                        <h3 class="section-title">Transaksi terbaru dari aplikasi ini</h3>
+                    </div>
                 </div>
-            </div>
 
-            <div class="stack-list mt-6">
-                <div class="stack-item">
-                    <p class="stack-title">API Key</p>
-                    <p class="stack-meta">Tersimpan sebagai hash SHA-256. Fingerprint saat ini: {{ $credentialStatus['api_key_fingerprint'] }}</p>
+                <div class="data-table mt-6">
+                    <div class="table-head">
+                        <span>Pembayaran</span>
+                        <span>Pelanggan</span>
+                        <span>Saluran</span>
+                        <span>Jumlah</span>
+                        <span>Status</span>
+                    </div>
+                    @forelse ($application->paymentOrders as $payment)
+                        <x-payment-row :payment="$payment" />
+                    @empty
+                        <div class="empty-state">Belum ada transaksi untuk aplikasi ini.</div>
+                    @endforelse
                 </div>
-                <div class="stack-item">
-                    <p class="stack-title">Webhook Secret</p>
-                    <p class="stack-meta">Tersimpan terenkripsi. Panjang secret saat ini: {{ $credentialStatus['webhook_secret_length'] }} karakter.</p>
-                </div>
-            </div>
-        </article>
-    </section>
+            </article>
 
-    <section class="panel-card">
-        <div class="panel-heading">
-            <div>
-                <p class="section-kicker">Pengelolaan Aplikasi</p>
-                <h3 class="section-title">Edit konfigurasi client app</h3>
-            </div>
+            <article class="panel-card">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker">Riwayat Sinkronisasi</p>
+                        <h3 class="section-title">Notifikasi terbaru ke aplikasi ini</h3>
+                    </div>
+                </div>
+
+                <div class="stack-list mt-6">
+                    @forelse ($application->webhookDeliveries as $delivery)
+                        <x-webhook-item :delivery="$delivery" />
+                    @empty
+                        <div class="empty-state">Belum ada riwayat sinkronisasi untuk aplikasi ini.</div>
+                    @endforelse
+                </div>
+            </article>
         </div>
 
-        <form method="POST" action="{{ route('admin.applications.update', $application) }}" class="mt-6 space-y-6">
-            @csrf
-            @method('PUT')
-            @include('admin.applications.partials.form', ['submitLabel' => 'Simpan Perubahan', 'application' => $application])
-        </form>
-    </section>
-
-    <section class="detail-grid">
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Rotasi Credential</p>
-                    <h3 class="section-title">Generate ulang secret aplikasi</h3>
-                </div>
-            </div>
-
-            <div class="stack-list mt-6">
-                <div class="stack-item">
-                    <p class="stack-title">API Key</p>
-                    <p class="stack-meta">Gunakan saat client app perlu credential baru untuk memanggil API orchestrator.</p>
-                    <form method="POST" action="{{ route('admin.applications.rotate-api-key', $application) }}" class="mt-4">
-                        @csrf
-                        <button type="submit" class="button-primary">Generate API Key Baru</button>
-                    </form>
+        <aside class="workspace-side">
+            <article class="panel-card">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker">Ringkasan Konfigurasi</p>
+                        <h3 class="section-title">Detail aplikasi</h3>
+                    </div>
+                    <x-status-badge :label="$application->status ? 'Aktif' : 'Tidak Aktif'" :tone="$application->status ? 'emerald' : 'slate'" />
                 </div>
 
-                <div class="stack-item">
-                    <p class="stack-title">Webhook Secret</p>
-                    <p class="stack-meta">Gunakan saat client app perlu mengganti secret verifikasi webhook.</p>
-                    <form method="POST" action="{{ route('admin.applications.rotate-webhook-secret', $application) }}" class="mt-4">
-                        @csrf
-                        <button type="submit" class="button-primary">Rotate Webhook Secret</button>
-                    </form>
+                <div class="admin-summary-list mt-6">
+                    <div class="admin-summary-item">
+                        <p class="admin-summary-label">Kode Aplikasi</p>
+                        <p class="admin-summary-value">{{ $application->code }}</p>
+                    </div>
+                    <div class="admin-summary-item">
+                        <p class="admin-summary-label">Default Provider</p>
+                        <p class="admin-summary-value">{{ $application->defaultProvider?->name ?? $application->default_provider }}</p>
+                    </div>
+                    <div class="admin-summary-item">
+                        <p class="admin-summary-label">Webhook URL</p>
+                        <p class="admin-summary-code">{{ $application->webhook_url }}</p>
+                    </div>
                 </div>
-            </div>
-        </article>
+            </article>
 
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Danger Zone</p>
-                    <h3 class="section-title">Hapus aplikasi</h3>
+            <details class="disclosure-card">
+                <summary class="disclosure-summary">
+                    <div>
+                        <p class="disclosure-title">Informasi sekunder</p>
+                        <p class="disclosure-meta">Status credential, rotasi key, dan penghapusan aplikasi.</p>
+                    </div>
+                    <span class="disclosure-indicator">Lihat</span>
+                </summary>
+                <div class="disclosure-body space-y-6">
+                    <div>
+                        <p class="section-kicker">Keamanan</p>
+                        <div class="admin-note-list mt-4">
+                            <div class="admin-note-card">
+                                <p class="stack-title">API Key</p>
+                                <p class="stack-meta">Fingerprint saat ini: {{ $credentialStatus['api_key_fingerprint'] }}</p>
+                            </div>
+                            <div class="admin-note-card">
+                                <p class="stack-title">Webhook Secret</p>
+                                <p class="stack-meta">Tersimpan terenkripsi dengan panjang {{ $credentialStatus['webhook_secret_length'] }} karakter.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <p class="section-kicker">Rotasi Credential</p>
+                        <div class="admin-note-list mt-4">
+                            <div class="admin-note-card">
+                                <p class="stack-title">API Key</p>
+                                <form method="POST" action="{{ route('admin.applications.rotate-api-key', $application) }}" class="mt-4">
+                                    @csrf
+                                    <button type="submit" class="button-primary">Generate API Key Baru</button>
+                                </form>
+                            </div>
+
+                            <div class="admin-note-card">
+                                <p class="stack-title">Webhook Secret</p>
+                                <form method="POST" action="{{ route('admin.applications.rotate-webhook-secret', $application) }}" class="mt-4">
+                                    @csrf
+                                    <button type="submit" class="button-primary">Buat Webhook Secret Baru</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <p class="section-kicker">Danger Zone</p>
+                        <p class="stack-meta">Aplikasi hanya bisa dihapus jika belum memiliki transaksi dan riwayat webhook.</p>
+                        <form method="POST" action="{{ route('admin.applications.destroy', $application) }}" class="mt-4" onsubmit="return confirm('Hapus aplikasi ini?');">
+                            @csrf
+                            @method('DELETE')
+                            <button type="submit" class="button-link">Hapus Aplikasi</button>
+                        </form>
+                    </div>
                 </div>
-            </div>
-
-            <p class="table-copy mt-6">Aplikasi hanya bisa dihapus jika belum memiliki transaksi dan riwayat webhook.</p>
-            <form method="POST" action="{{ route('admin.applications.destroy', $application) }}" class="mt-6" onsubmit="return confirm('Hapus aplikasi ini?');">
-                @csrf
-                @method('DELETE')
-                <button type="submit" class="button-link">Hapus Aplikasi</button>
-            </form>
-        </article>
-    </section>
-
-    <section class="split-grid">
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Daftar Transaksi</p>
-                    <h3 class="section-title">Transaksi terbaru dari aplikasi ini</h3>
-                </div>
-            </div>
-
-            <div class="data-table mt-6">
-                <div class="table-head">
-                    <span>Pembayaran</span>
-                    <span>Pelanggan</span>
-                    <span>Saluran</span>
-                    <span>Jumlah</span>
-                    <span>Status</span>
-                </div>
-                @forelse ($application->paymentOrders as $payment)
-                    <x-payment-row :payment="$payment" />
-                @empty
-                    <div class="empty-state">Belum ada transaksi untuk aplikasi ini.</div>
-                @endforelse
-            </div>
-        </article>
-
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Riwayat Sinkronisasi</p>
-                    <h3 class="section-title">Notifikasi terbaru ke aplikasi ini</h3>
-                </div>
-            </div>
-
-            <div class="stack-list">
-                @forelse ($application->webhookDeliveries as $delivery)
-                    <x-webhook-item :delivery="$delivery" />
-                @empty
-                    <div class="empty-state">Belum ada riwayat sinkronisasi untuk aplikasi ini.</div>
-                @endforelse
-            </div>
-        </article>
+            </details>
+        </aside>
     </section>
 @endsection

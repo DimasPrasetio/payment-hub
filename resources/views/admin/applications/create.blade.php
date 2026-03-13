@@ -3,43 +3,59 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="detail-grid">
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Onboarding Client App</p>
-                    <h3 class="section-title">Daftarkan aplikasi baru</h3>
-                </div>
-            </div>
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Yang Akan Dibuat</span>
+            <span class="page-hero-value">Satu koneksi aplikasi lengkap dengan API key dan webhook secret awal.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Bantuan Operator</span>
+            <span class="page-hero-value">Isi identitas aplikasi, pilih provider default, lalu tentukan webhook URL.</span>
+        </div>
+    </x-page-hero>
 
-            <form method="POST" action="{{ route('admin.applications.store') }}" class="mt-6 space-y-6">
-                @csrf
-                @include('admin.applications.partials.form', ['submitLabel' => 'Buat Aplikasi'])
-            </form>
-        </article>
+    <section class="workspace-grid">
+        <div class="workspace-main">
+            <article class="panel-card">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker">Onboarding Client App</p>
+                        <h3 class="section-title">Daftarkan aplikasi baru</h3>
+                        <p class="section-copy">Isi identitas inti, pilih provider default, lalu tentukan alamat webhook.</p>
+                    </div>
+                </div>
 
-        <article class="panel-card">
-            <div class="panel-heading">
-                <div>
-                    <p class="section-kicker">Yang akan dibuat</p>
-                    <h3 class="section-title">Credential awal aplikasi</h3>
-                </div>
-            </div>
+                <form method="POST" action="{{ route('admin.applications.store') }}" class="mt-6 space-y-6">
+                    @csrf
+                    @include('admin.applications.partials.form', ['submitLabel' => 'Buat Aplikasi'])
+                </form>
+            </article>
+        </div>
 
-            <div class="stack-list mt-6">
-                <div class="stack-item">
-                    <p class="stack-title">API Key Client</p>
-                    <p class="stack-meta">Digunakan oleh client app pada header `X-API-Key` untuk memanggil endpoint `/api/v1/*`.</p>
+        <aside class="workspace-side">
+            <article class="panel-card">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker">Ringkasan</p>
+                        <h3 class="section-title">Yang perlu disiapkan</h3>
+                    </div>
                 </div>
-                <div class="stack-item">
-                    <p class="stack-title">Webhook Secret</p>
-                    <p class="stack-meta">Digunakan client app untuk memverifikasi `X-Webhook-Signature` dari Payment Orchestrator.</p>
+
+                <div class="admin-note-list mt-6">
+                    <div class="admin-note-card">
+                        <p class="stack-title">Credential dibuat otomatis</p>
+                        <p class="stack-meta">API key dan webhook secret akan tersedia setelah aplikasi disimpan.</p>
+                    </div>
+                    <div class="admin-note-card">
+                        <p class="stack-title">Provider default bersifat fallback</p>
+                        <p class="stack-meta">Digunakan saat aplikasi tidak memilih provider secara manual.</p>
+                    </div>
+                    <div class="admin-note-card">
+                        <p class="stack-title">Webhook harus valid</p>
+                        <p class="stack-meta">Alamat ini dipakai untuk mengirim pembaruan status pembayaran ke aplikasi.</p>
+                    </div>
                 </div>
-                <div class="stack-item">
-                    <p class="stack-title">Default Provider</p>
-                    <p class="stack-meta">Dipakai saat client tidak mengirim override `provider_code` pada create payment. Provider wajib sudah aktif terlebih dahulu.</p>
-                </div>
-            </div>
-        </article>
+            </article>
+        </aside>
     </section>
 @endsection

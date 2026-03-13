@@ -16,7 +16,6 @@
         <span class="topbar-badge">{{ strtoupper(app()->environment()) }}</span>
         @auth
             <span class="topbar-user">{{ auth()->user()->username }}</span>
-            <a href="{{ route('admin.dashboard') }}" class="button-link">Dashboard</a>
             <form method="POST" action="{{ route('logout') }}">
                 @csrf
                 <button type="submit" class="button-link">Logout</button>

@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Untuk Apa</span>
+            <span class="page-hero-value">Melihat callback yang diterima sistem dan memastikan proses validasi berjalan benar.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Tips</span>
+            <span class="page-hero-value">Gunakan payment ID atau event type jika ingin melacak satu kasus spesifik.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Event</p>
+                <h3 class="section-title">Cari callback yang ingin ditelusuri</h3>
+                <p class="section-copy">Filter disederhanakan agar investigasi callback tidak membingungkan bagi operator.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field form-field-wide">
                 <label for="event_type" class="form-label">Callback event</label>

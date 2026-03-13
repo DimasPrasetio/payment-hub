@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Admin;
 
 use App\Models\PaymentProvider;
+use App\Support\ProviderConsoleProfile;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -28,6 +29,7 @@ class UpdateProviderRequest extends FormRequest
             'api_base_url' => trim((string) $this->input('api_base_url', '')),
             'public_base_url' => trim((string) $this->input('public_base_url', '')),
             'return_url' => trim((string) $this->input('return_url', '')),
+            'notification_url' => trim((string) $this->input('notification_url', '')),
             'extra_config' => trim((string) $this->input('extra_config', '')),
         ]);
     }
@@ -49,6 +51,7 @@ class UpdateProviderRequest extends FormRequest
             'api_base_url' => ['nullable', 'url', 'max:255'],
             'public_base_url' => ['nullable', 'url', 'max:255'],
             'return_url' => ['nullable', 'url', 'max:255'],
+            'notification_url' => ['nullable', 'url', 'max:255'],
             'supports_refund_api' => ['nullable', 'boolean'],
             'extra_config' => ['nullable', 'json'],
         ];
@@ -64,7 +67,7 @@ class UpdateProviderRequest extends FormRequest
             /** @var PaymentProvider|null $provider */
             $provider = $this->route('provider');
             $code = strtolower((string) ($this->input('code') ?: $provider?->code));
-            $requirements = $this->activationRequirements()[$code] ?? [];
+            $requirements = ProviderConsoleProfile::activationRequirementMap($code);
 
             foreach ($requirements as $field => $label) {
                 $submitted = trim((string) $this->input($field, ''));
@@ -75,23 +78,5 @@ class UpdateProviderRequest extends FormRequest
                 }
             }
         });
-    }
-
-    protected function activationRequirements(): array
-    {
-        return [
-            'tripay' => [
-                'merchant_code' => 'Merchant Code',
-                'api_key' => 'API Key',
-                'private_key' => 'Private Key',
-            ],
-            'midtrans' => [
-                'server_key' => 'Server Key',
-            ],
-            'xendit' => [
-                'secret_key' => 'Secret Key',
-                'callback_token' => 'Callback Token',
-            ],
-        ];
     }
 }

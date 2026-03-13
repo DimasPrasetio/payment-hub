@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Tujuan Halaman</span>
+            <span class="page-hero-value">Pantau notifikasi ke aplikasi client dan cek mana yang sukses, menunggu, atau gagal.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Arah Investigasi</span>
+            <span class="page-hero-value">Mulai dari status pengiriman, lalu sempitkan dengan aplikasi, provider, atau payment ID.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Pengiriman</p>
+                <h3 class="section-title">Pilih notifikasi yang ingin diperiksa</h3>
+                <p class="section-copy">Gunakan kombinasi paling sederhana agar hasil tetap mudah dipahami.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field">
                 <label for="application" class="form-label">Aplikasi Asal</label>

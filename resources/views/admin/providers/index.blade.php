@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Tujuan Halaman</span>
+            <span class="page-hero-value">Lihat kondisi setiap provider sebelum masuk ke halaman detail konfigurasi.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Operator Hint</span>
+            <span class="page-hero-value">Periksa status aktif, mode, dan coverage metode sebelum mengubah credential.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Daftar</p>
+                <h3 class="section-title">Temukan saluran yang ingin dikelola</h3>
+                <p class="section-copy">Gunakan pencarian nama atau kode jika daftar provider mulai bertambah.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field form-field-wide">
                 <label for="q" class="form-label">Cari Saluran</label>

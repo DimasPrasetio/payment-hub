@@ -3,22 +3,39 @@
 @section('title', $pageTitle)
 
 @section('content')
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription">
+        <x-slot:actions>
+            <a href="{{ route('admin.transactions') }}" class="provider-hero-link">Riwayat Transaksi</a>
+            <a href="{{ route('admin.providers') }}" class="provider-hero-link">Kelola Provider</a>
+            <a href="{{ route('admin.applications') }}" class="provider-hero-link">Kelola Aplikasi</a>
+        </x-slot:actions>
+    </x-page-hero>
+
     <section class="page-section">
         <div class="metric-grid">
             @foreach ($summaryCards as $card)
                 @php
+                    $labelMap = [
+                        'Total transactions' => 'Total Transaksi',
+                        'Paid conversion' => 'Konversi Berhasil',
+                        'Pending queue' => 'Antrian Pending',
+                        'Problem cases' => 'Kasus Bermasalah',
+                        'Webhook success' => 'Webhook Berhasil',
+                    ];
                     $displayValue = in_array($card['label'], ['Paid conversion', 'Webhook success'], true)
                         ? number_format($card['value'], 1) . '%'
                         : number_format($card['value']);
                     $displayCaption = match ($card['label']) {
-                        'Total transactions' => 'IDR ' . number_format($card['amount'], 0, ',', '.') . ' gross volume',
-                        'Paid conversion' => number_format($card['amount']) . ' successful payments',
-                        'Webhook success' => number_format($card['amount']) . ' pending retries',
+                        'Total transactions' => 'IDR ' . number_format($card['amount'], 0, ',', '.') . ' total nominal',
+                        'Paid conversion' => number_format($card['amount']) . ' transaksi berhasil',
+                        'Pending queue' => 'Pesanan yang masih menunggu penyelesaian',
+                        'Problem cases' => 'Transaksi gagal, kedaluwarsa, atau refund',
+                        'Webhook success' => number_format($card['amount']) . ' notifikasi masih menunggu ulang',
                         default => $card['caption'],
                     };
                 @endphp
 
-                <x-metric-card :label="$card['label']" :value="$displayValue" :caption="$displayCaption"
+                <x-metric-card :label="$labelMap[$card['label']] ?? $card['label']" :value="$displayValue" :caption="$displayCaption"
                     :tone="$card['tone']" />
             @endforeach
         </div>

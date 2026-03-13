@@ -3,7 +3,30 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <x-slot:actions>
+            <a href="{{ route('admin.applications.create') }}" class="provider-hero-link">Tambah Aplikasi</a>
+        </x-slot:actions>
+
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Gunakan Halaman Ini</span>
+            <span class="page-hero-value">Cari aplikasi, cek provider default, dan buka detail konfigurasi.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Panduan Cepat</span>
+            <span class="page-hero-value">Filter hanya jika data sudah banyak. Jika tidak, biarkan semua kosong.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Daftar</p>
+                <h3 class="section-title">Saring aplikasi yang ingin ditinjau</h3>
+                <p class="section-copy">Isi hanya kolom yang diperlukan. Sisanya bisa dibiarkan kosong.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field form-field-wide">
                 <label for="q" class="form-label">Cari Aplikasi</label>
@@ -30,7 +53,6 @@
             <div class="form-actions">
                 <button type="submit" class="button-primary">Terapkan Filter</button>
                 <a href="{{ route('admin.applications') }}" class="button-link">Reset Filter</a>
-                <a href="{{ route('admin.applications.create') }}" class="button-link">Tambah Aplikasi</a>
             </div>
         </form>
     </section>

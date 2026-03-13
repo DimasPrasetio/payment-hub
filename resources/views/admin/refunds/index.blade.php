@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Fungsi Halaman</span>
+            <span class="page-hero-value">Melihat order yang sudah dibayar atau sudah direfund sebagai dasar proses pengembalian dana.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Catatan</span>
+            <span class="page-hero-value">Gunakan filter provider dan status agar daftar kandidat refund lebih mudah dibaca.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Refund</p>
+                <h3 class="section-title">Pilih order yang ingin ditinjau</h3>
+                <p class="section-copy">Halaman ini bersifat operasional. Fokuskan pencarian pada provider dan status refund.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field">
                 <label for="application" class="form-label">Application</label>

@@ -3,7 +3,26 @@
 @section('title', $pageTitle)
 
 @section('content')
-    <section class="panel-card">
+    <x-page-hero :kicker="$pageKicker" :title="$pageHeading" :description="$pageDescription" compact>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Fungsi Utama</span>
+            <span class="page-hero-value">Lacak transaksi berdasarkan aplikasi, provider, metode, status, atau rentang tanggal.</span>
+        </div>
+        <div class="page-hero-stat">
+            <span class="page-hero-label">Saran Penggunaan</span>
+            <span class="page-hero-value">Mulai dari kata kunci atau tanggal dulu, lalu tambah filter jika hasil masih terlalu banyak.</span>
+        </div>
+    </x-page-hero>
+
+    <section class="panel-card filter-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="section-kicker">Filter Pencarian</p>
+                <h3 class="section-title">Temukan transaksi yang ingin diperiksa</h3>
+                <p class="section-copy">Filter dibuat bertahap agar mudah dipakai operator tanpa pengetahuan teknis mendalam.</p>
+            </div>
+        </div>
+
         <form method="GET" class="filter-grid">
             <div class="form-field form-field-wide">
                 <label for="q" class="form-label">Cari Transaksi</label>
