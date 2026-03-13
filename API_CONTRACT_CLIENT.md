@@ -4,7 +4,7 @@
 
 ### Version
 
-`1.0.0-implementation`
+`1.0.0`
 
 ### Base URL
 
@@ -267,7 +267,7 @@ GET /api/v1/health
 
 Auth: tidak perlu.
 
-Response `202`:
+Response `200`:
 
 ```json
 {

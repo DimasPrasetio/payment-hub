@@ -17,6 +17,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Database\QueryException;
 
 class PaymentService
 {
@@ -70,67 +71,77 @@ class PaymentService
             );
         }
 
-        $result = DB::transaction(function () use ($application, $attributes, $provider, $adapter, $mapping, $storedIdempotencyKey) {
-            $payment = PaymentOrder::query()->create([
-                'public_id' => $this->publicId('pay_'),
-                'application_id' => $application->id,
-                'tenant_id' => $attributes['tenant_id'] ?? null,
-                'external_order_id' => $attributes['external_order_id'],
-                'idempotency_key' => $storedIdempotencyKey,
-                'merchant_ref' => $this->merchantReference($application),
-                'provider_code' => $provider->code,
-                'payment_method' => $mapping->internal_code,
-                'customer_name' => $attributes['customer']['name'],
-                'customer_email' => $attributes['customer']['email'],
-                'customer_phone' => $attributes['customer']['phone'],
-                'amount' => $attributes['amount'],
-                'currency' => $attributes['currency'] ?? 'IDR',
-                'status' => PaymentOrderStatus::Created,
-                'metadata' => $attributes['metadata'] ?? null,
-                'expires_at' => now()->addHour(),
-            ]);
+        try {
+            $result = DB::transaction(function () use ($application, $attributes, $provider, $adapter, $mapping, $storedIdempotencyKey) {
+                $payment = PaymentOrder::query()->create([
+                    'public_id' => $this->publicId('pay_'),
+                    'application_id' => $application->id,
+                    'tenant_id' => $attributes['tenant_id'] ?? null,
+                    'external_order_id' => $attributes['external_order_id'],
+                    'idempotency_key' => $storedIdempotencyKey,
+                    'merchant_ref' => $this->merchantReference($application),
+                    'provider_code' => $provider->code,
+                    'payment_method' => $mapping->internal_code,
+                    'customer_name' => $attributes['customer']['name'],
+                    'customer_email' => $attributes['customer']['email'],
+                    'customer_phone' => $attributes['customer']['phone'],
+                    'amount' => $attributes['amount'],
+                    'currency' => $attributes['currency'] ?? 'IDR',
+                    'status' => PaymentOrderStatus::Created,
+                    'metadata' => $attributes['metadata'] ?? null,
+                    'expires_at' => now()->addHour(),
+                ]);
 
-            $this->recordEvent($payment, 'provider.request', [
-                'provider' => $provider->code,
-                'provider_method_code' => $mapping->provider_method_code,
-                'amount' => $payment->amount,
-                'currency' => $payment->currency,
-            ]);
+                $this->recordEvent($payment, 'provider.request', [
+                    'provider' => $provider->code,
+                    'provider_method_code' => $mapping->provider_method_code,
+                    'amount' => $payment->amount,
+                    'currency' => $payment->currency,
+                ]);
 
-            $providerTransaction = $this->createProviderTransaction($payment, $mapping, $provider, $adapter);
+                $providerTransaction = $this->createProviderTransaction($payment, $mapping, $provider, $adapter);
 
-            $this->recordEvent($payment, 'provider.response', [
-                'provider' => $provider->code,
-                'provider_reference' => $providerTransaction->provider_reference,
-                'payment_method' => $mapping->provider_method_code,
-                'payment_instruction' => [
-                    'payment_url' => $providerTransaction->payment_url,
-                    'pay_code' => $providerTransaction->pay_code,
-                    'qr_string' => $providerTransaction->qr_string,
-                    'qr_url' => $providerTransaction->qr_url,
-                ],
-            ]);
+                $this->recordEvent($payment, 'provider.response', [
+                    'provider' => $provider->code,
+                    'provider_reference' => $providerTransaction->provider_reference,
+                    'payment_method' => $mapping->provider_method_code,
+                    'payment_instruction' => [
+                        'payment_url' => $providerTransaction->payment_url,
+                        'pay_code' => $providerTransaction->pay_code,
+                        'qr_string' => $providerTransaction->qr_string,
+                        'qr_url' => $providerTransaction->qr_url,
+                    ],
+                ]);
 
-            $payment->forceFill([
-                'status' => PaymentOrderStatus::Pending,
-            ])->save();
+                $payment->forceFill([
+                    'status' => PaymentOrderStatus::Pending,
+                ])->save();
 
-            $this->recordEvent($payment, 'payment.created', [
-                'status' => PaymentOrderStatus::Pending->value,
-                'provider' => $provider->code,
-                'payment_method' => $payment->payment_method,
-            ]);
+                $this->recordEvent($payment, 'payment.created', [
+                    'status' => PaymentOrderStatus::Pending->value,
+                    'provider' => $provider->code,
+                    'payment_method' => $payment->payment_method,
+                ]);
 
-            $delivery = $this->createWebhookDelivery($payment, 'payment.created');
+                $delivery = $this->createWebhookDelivery($payment, 'payment.created');
 
-            return [
-                'payment' => $payment,
-                'delivery' => $delivery,
-                'http_status' => 201,
-            ];
-        });
+                return [
+                    'payment' => $payment,
+                    'delivery' => $delivery,
+                    'http_status' => 201,
+                ];
+            });
+        } catch (QueryException $exception) {
+            $result = $this->recoverConcurrentCreateResult(
+                $application,
+                $attributes,
+                $provider->code,
+                $storedIdempotencyKey,
+                $exception,
+            );
+        }
 
-        $this->queueWebhookDelivery($result['delivery']);
+        $this->queueWebhookDelivery($result['delivery'] ?? null);
 
         return [
             'payment' => $result['payment']->fresh(['application:id,code', 'latestProviderTransaction']),
@@ -737,6 +748,79 @@ class PaymentService
         }
 
         return $value;
+    }
+
+    protected function recoverConcurrentCreateResult(
+        Application $application,
+        array $attributes,
+        string $providerCode,
+        ?string $storedIdempotencyKey,
+        QueryException $exception
+    ): array {
+        if (! $this->isDuplicateKeyViolation($exception)) {
+            throw $exception;
+        }
+
+        if ($storedIdempotencyKey !== null) {
+            $existingPayment = PaymentOrder::query()
+                ->with(['application:id,code', 'latestProviderTransaction'])
+                ->where('application_id', $application->id)
+                ->where('idempotency_key', $storedIdempotencyKey)
+                ->first();
+
+            if ($existingPayment) {
+                if (! $this->matchesIdempotentPayload($existingPayment, $application, $providerCode, $attributes)) {
+                    throw new ApiException(
+                        'IDEMPOTENCY_CONFLICT',
+                        'Idempotency key already used with different parameters.',
+                        409,
+                    );
+                }
+
+                return [
+                    'payment' => $existingPayment,
+                    'delivery' => null,
+                    'http_status' => 200,
+                ];
+            }
+        }
+
+        $duplicateExternalOrder = PaymentOrder::query()
+            ->where('application_id', $application->id)
+            ->where('external_order_id', $attributes['external_order_id'])
+            ->exists();
+
+        if ($duplicateExternalOrder) {
+            throw new ApiException(
+                'VALIDATION_ERROR',
+                'The given data was invalid.',
+                422,
+                [
+                    'external_order_id' => ['The external_order_id has already been taken.'],
+                ],
+            );
+        }
+
+        throw $exception;
+    }
+
+    protected function isDuplicateKeyViolation(QueryException $exception): bool
+    {
+        $sqlState = (string) ($exception->errorInfo[0] ?? $exception->getCode());
+        $driverCode = (int) ($exception->errorInfo[1] ?? 0);
+        $message = strtolower($exception->getMessage());
+
+        if (in_array($sqlState, ['23000', '23505'], true)) {
+            return true;
+        }
+
+        if (in_array($driverCode, [19, 1062, 1555, 2067], true)) {
+            return true;
+        }
+
+        return str_contains($message, 'duplicate')
+            || str_contains($message, 'unique constraint')
+            || str_contains($message, 'integrity constraint violation');
     }
 
     protected function storedIdempotencyKey(Application $application, ?string $idempotencyKey): ?string

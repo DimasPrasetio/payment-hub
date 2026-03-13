@@ -4,7 +4,7 @@
 
 ### Version
 
-`1.0.0-implementation`
+`1.0.0`
 
 ### Base URL
 
